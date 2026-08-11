@@ -11,6 +11,14 @@
  * `src/instrumentation.ts` at server boot and by the CLI entry points.
  */
 
+/**
+ * A bag of environment variables. Deliberately looser than NodeJS.ProcessEnv,
+ * which Next narrows so that NODE_ENV is required — these functions only ever
+ * read strings, and tests need to construct partial environments to prove the
+ * fail-closed behaviour below.
+ */
+export type EnvLike = Record<string, string | undefined>
+
 /** Anything that is not explicitly development or test is production.
  *
  * Fails CLOSED, deliberately. The equivalent helper on the host's
@@ -20,7 +28,7 @@
  * as production costs a developer one env var; the other way round costs real
  * customers real messages.
  */
-export function isProductionRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
+export function isProductionRuntime(env: EnvLike = process.env): boolean {
   if (env.VERCEL_ENV) return env.VERCEL_ENV === "production"
   const raw = (env.APP_ENV ?? env.NODE_ENV ?? "").trim().toLowerCase()
   return raw !== "development" && raw !== "test"
@@ -34,7 +42,7 @@ export function isProductionRuntime(env: NodeJS.ProcessEnv = process.env): boole
  * is APPROVED on the WABA (hours of Meta review), nothing downstream of the
  * materialiser could otherwise be exercised at all.
  */
-export function isDryRun(env: NodeJS.ProcessEnv = process.env): boolean {
+export function isDryRun(env: EnvLike = process.env): boolean {
   const flag = env.REMINDER_DRY_RUN?.trim()
   return flag === "1" || flag?.toLowerCase() === "true"
 }
@@ -54,7 +62,7 @@ const REQUIRED = [
  * Called from `instrumentation.ts`, so a bad deploy fails visibly instead of
  * serving 500s whose cause is three layers down a stack trace.
  */
-export function assertEnv(env: NodeJS.ProcessEnv = process.env): void {
+export function assertEnv(env: EnvLike = process.env): void {
   const missing = REQUIRED.filter((name) => !env[name]?.trim())
   if (missing.length > 0) {
     throw new Error(
@@ -91,12 +99,12 @@ export function assertEnv(env: NodeJS.ProcessEnv = process.env): void {
 }
 
 /** The public origin, with any trailing slash removed. */
-export function appPublicUrl(env: NodeJS.ProcessEnv = process.env): string {
+export function appPublicUrl(env: EnvLike = process.env): string {
   return (env.APP_PUBLIC_URL ?? "").trim().replace(/\/+$/, "")
 }
 
 /** Supabase connection details for the service-role client. */
-export function supabaseAdminConfig(env: NodeJS.ProcessEnv = process.env) {
+export function supabaseAdminConfig(env: EnvLike = process.env) {
   const url = env.NEXT_PUBLIC_SUPABASE_URL?.trim()
   const serviceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY?.trim()
   if (!url || !serviceRoleKey) {

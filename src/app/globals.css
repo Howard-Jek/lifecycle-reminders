@@ -1,6 +1,11 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-@import "shadcn/tailwind.css";
+/* The base-nova theme layer (keyframes + component tokens).
+   The host writes this as `@import "shadcn/tailwind.css"`. That relies on the
+   package's `"style"` export condition, which Tailwind v4's CSS resolver does
+   not apply here, so the path is spelled out. Same file, byte for byte — this
+   is the ONE line in this stylesheet that differs from the host's. */
+@import "../../node_modules/shadcn/dist/tailwind.css";
 
 @custom-variant dark (&:is(.dark *));
 

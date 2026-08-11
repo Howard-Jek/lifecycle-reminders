@@ -27,6 +27,15 @@ export function ThemeToggle() {
   const [mounted, setMounted] = React.useState(false)
 
   React.useEffect(() => {
+    // Copied verbatim from the host app so a re-sync stays a clean diff.
+    //
+    // react-hooks/set-state-in-effect is right in general and wrong here: the
+    // theme lives on <html>, written by the boot script in layout.tsx before
+    // React exists. The server render cannot know it, so reading it after
+    // mount is the only way to avoid a hydration mismatch — and `mounted`
+    // exists precisely to keep the first client render identical to the
+    // server's.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTheme(currentTheme())
     setMounted(true)
   }, [])

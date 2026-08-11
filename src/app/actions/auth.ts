@@ -2,10 +2,7 @@
 
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
-
-/** The shape every auth form's useActionState carries. */
-export type AuthState = { error: string | null }
-export const NO_ERROR: AuthState = { error: null }
+import type { AuthState } from "@/lib/auth-state"
 
 function readCredentials(formData: FormData) {
   return {

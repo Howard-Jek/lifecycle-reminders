@@ -3,7 +3,7 @@
 import { useActionState } from "react"
 import Link from "next/link"
 import { Wordmark } from "@/components/wordmark"
-import { NO_ERROR, type AuthState } from "@/app/actions/auth"
+import { NO_ERROR, type AuthState } from "@/lib/auth-state"
 
 type Props = {
   mode: "signin" | "signup"
