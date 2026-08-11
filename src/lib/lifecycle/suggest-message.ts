@@ -1,0 +1,139 @@
+/**
+ * Draft the message an agent could send a client about an upcoming lifecycle
+ * event.
+ *
+ * A single generateObject call — no tool loop. There is nothing to look up and
+ * no multi-step decision to make: the profile, the event and the operator's
+ * rules are all known up front, so an agent loop here would be cost and latency
+ * for no benefit.
+ *
+ * The suggestion is ALWAYS a draft for a human. It is delivered to the agent,
+ * never to the client, and the reminder is sent with or without it — a drafting
+ * failure must never swallow the reminder itself, which is the part that
+ * actually matters.
+ */
+
+import { generateObject } from "ai"
+import { REMINDER_MODEL, REMINDER_FALLBACK_MODEL, isCapacityError } from "@/lib/ai/model"
+import { z } from "zod"
+import { escapeXml } from "@/lib/xml"
+import { buildGuardrailsBlock } from "@/lib/guardrails"
+import type { Guardrails } from "@/lib/guardrails/types"
+
+// No .int() and no min/max: Anthropic's structured output rejects numeric
+// bounds on integers, which is why the other Anthropic paths avoid them too
+// (see CLAUDE.md). A single string field sidesteps the issue entirely.
+const suggestionSchema = z.object({
+  message: z
+    .string()
+    .describe(
+      "The WhatsApp message the agent could send, ready to copy. Under 60 words, warm, specific to this client and event.",
+    ),
+})
+
+const SYSTEM_PROMPT = `
+<role>
+You draft a short WhatsApp message for a human agent to send to their own client
+about an upcoming date — a birthday, a policy expiry, a review. The agent reads
+your draft, edits it if they want, and sends it themselves. You are never
+talking to the client directly.
+</role>
+
+<rules>
+  <rule>Write as the AGENT, in first person, to the client by first name.</rule>
+  <rule>Under 60 words. WhatsApp style — warm, plain, human. Not an email, no "Dear".</rule>
+  <rule>One message. No subject line, no sign-off block, no placeholders like [name].</rule>
+  <rule>Reference the specific event naturally. A birthday is a greeting, NOT a sales pitch — do not attach an offer to it.</rule>
+  <rule>NEVER invent a figure, date, policy number, product name or entitlement that is not given to you. If a detail would help but you do not have it, write around it.</rule>
+  <rule>Do not promise outcomes, returns, approval, or pricing.</rule>
+  <rule>For an expiry or review, the goal is to open a conversation — offer to talk it through, do not try to close.</rule>
+  <rule>Output the message text only.</rule>
+</rules>
+`.trim()
+
+export type SuggestionInput = {
+  clientFirstName: string
+  /** 'birthday' | 'policy_expiry' | … — free text, straight from the event. */
+  eventType: string
+  /** Operator's own label for the event, when they set one. */
+  eventLabel: string | null
+  /** Humanised lead time, e.g. "in a month". */
+  whenText: string
+  /** The event's own payload (policy number, insurer …), already tenant-scoped. */
+  eventPayload: Record<string, unknown>
+  /** Extra CSV columns carried on the lead, same convention as the reply prompt. */
+  leadContext: Record<string, unknown>
+  /** The agent's display name, so the draft can sound like them. */
+  agentName: string | null
+  guardrails: Guardrails
+}
+
+/** Render a small, escaped fact block. Values are operator/CSV data, so they
+ * are escaped for the same reason the reply prompt escapes lead input. */
+function renderFacts(label: string, obj: Record<string, unknown>): string {
+  const entries = Object.entries(obj).filter(
+    ([, v]) => v != null && v !== "" && typeof v !== "object",
+  )
+  if (entries.length === 0) return ""
+  const rows = entries
+    .slice(0, 20)
+    .map(([k, v]) => `  <fact key="${escapeXml(k)}">${escapeXml(String(v))}</fact>`)
+    .join("\n")
+  return `<${label}>\n${rows}\n</${label}>`
+}
+
+export function buildSuggestionPrompt(input: SuggestionInput): string {
+  return [
+    `<client><first_name>${escapeXml(input.clientFirstName)}</first_name></client>`,
+    `<event>`,
+    `  <type>${escapeXml(input.eventType)}</type>`,
+    input.eventLabel ? `  <label>${escapeXml(input.eventLabel)}</label>` : "",
+    `  <when>${escapeXml(input.whenText)}</when>`,
+    `</event>`,
+    renderFacts("event_details", input.eventPayload),
+    renderFacts("client_details", input.leadContext),
+    input.agentName ? `<agent><name>${escapeXml(input.agentName)}</name></agent>` : "",
+    ``,
+    `Draft the message.`,
+  ]
+    .filter(Boolean)
+    .join("\n")
+}
+
+/** A safe, generic line used when drafting is off or fails. Deliberately says
+ * nothing specific — an agent can send it as-is without checking any facts. */
+export function fallbackSuggestion(eventType: string, firstName: string): string {
+  if (eventType === "birthday") {
+    return `Hi ${firstName}, wishing you a very happy birthday! Hope you have a great day.`
+  }
+  return `Hi ${firstName}, just reaching out about something coming up on your account — do you have a few minutes this week for a quick chat?`
+}
+
+/**
+ * Draft a suggestion. Returns null on any failure — the caller then sends the
+ * reminder with the fallback line. Never throws.
+ */
+export async function draftSuggestion(input: SuggestionInput): Promise<string | null> {
+  const system = [SYSTEM_PROMPT, buildGuardrailsBlock(input.guardrails)]
+    .filter(Boolean)
+    .join("\n\n")
+  const args = { schema: suggestionSchema, system, prompt: buildSuggestionPrompt(input) }
+
+  try {
+    let object
+    try {
+      ;({ object } = await generateObject({ model: REMINDER_MODEL, ...args }))
+    } catch (err) {
+      if (!isCapacityError(err)) throw err
+      ;({ object } = await generateObject({ model: REMINDER_FALLBACK_MODEL, ...args }))
+    }
+    const message = object.message?.trim()
+    return message ? message : null
+  } catch (err) {
+    console.error(
+      `[lifecycle] suggestion drafting failed for ${input.eventType}:`,
+      err instanceof Error ? err.message : String(err),
+    )
+    return null
+  }
+}
