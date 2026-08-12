@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Scratch written by `supabase start` — bundled third-party JS, not ours.
+    "supabase/.temp/**",
   ]),
 ]);
 

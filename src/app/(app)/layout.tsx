@@ -19,6 +19,7 @@ const NAV = [
   { href: "/contacts", label: "Contacts" },
   { href: "/import", label: "Import" },
   { href: "/team", label: "Team" },
+  { href: "/sandbox", label: "Sandbox" },
   { href: "/settings", label: "Settings" },
 ] as const
 

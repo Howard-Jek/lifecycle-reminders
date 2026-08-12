@@ -33,7 +33,14 @@ function clamp(value: string, max: number): string {
 
 /** Absolute deep link to the lead, built at send time from the runtime origin. */
 export function reminderDeepLink(baseUrl: string, leadId: string): string {
-  return `${baseUrl.replace(/\/$/, "")}/dashboard?lead=${leadId}`
+  // This app's own contact route. The prior art pointed at the host's
+  // `/dashboard?lead=<id>`, which 404s here — and a deep link that fails is the
+  // worst kind, because the message still looks perfectly fine.
+  //
+  // At integration this becomes `/dashboard?lead=${leadId}` again. It is the
+  // one line to change, and it is why the link is built here rather than being
+  // string-concatenated at the call site.
+  return `${baseUrl.replace(/\/$/, "")}/contacts/${leadId}`
 }
 
 /** Human phrasing for the lead time — "today" reads far better than "in 0 days". */
@@ -111,6 +118,34 @@ export async function sendClientEventReminder(
  * template's shape. Registered once on the Goma WABA, like the operator alert.
  * No URL is baked in: the link is body variable {{5}}, filled per send.
  */
+/**
+ * The template body, exactly as Meta stores it.
+ *
+ * ONE definition, because two would drift and the drift would be invisible:
+ * the registration script submits this text, and the sandbox renders it. If
+ * they disagreed, the sandbox would show a message Meta never sends — which
+ * would make it evidence of nothing.
+ *
+ * The five `{{n}}` placeholders correspond positionally to
+ * buildReminderComponents(). Changing the count here without changing that
+ * function makes every send fail Meta validation, so tests pin them together.
+ *
+ * Deliberately does NOT promise "send from the dashboard": the agent copies
+ * the suggestion and sends it themselves. That human step is the product.
+ *
+ * TWO META RULES CONSTRAIN THIS STRING, and both cost an hours-long rejection
+ * cycle to learn the hard way:
+ *   1. No two variables may be adjacent with only whitespace between them —
+ *      hence "has" and "coming up" separating {{1}} {{2}} {{3}}.
+ *   2. The body may not begin or end with a variable — hence the leading
+ *      "📅 Reminder:" and the trailing sentence after {{5}}.
+ * validateDefinition() in scripts/register-reminder-template.ts enforces both
+ * before anything is submitted.
+ */
+export const CLIENT_EVENT_REMINDER_BODY_TEXT =
+  "📅 Reminder: {{1}} has {{2}} coming up {{3}}.\n\nSuggested message:\n{{4}}\n\n" +
+  "Open their profile: {{5}}\nCopy the message above, edit it if you like, and send it yourself."
+
 export function clientEventReminderTemplateDefinition(): Record<string, unknown> {
   return {
     name: CLIENT_EVENT_REMINDER_TEMPLATE,
@@ -119,8 +154,7 @@ export function clientEventReminderTemplateDefinition(): Record<string, unknown>
     components: [
       {
         type: "BODY",
-        text:
-          "📅 {{1}} — {{2}} {{3}}.\n\nSuggested message:\n{{4}}\n\nOpen the client: {{5}}\n\nSend it from the dashboard, or copy and send it yourself.",
+        text: CLIENT_EVENT_REMINDER_BODY_TEXT,
         example: {
           body_text: [
             [
@@ -128,7 +162,7 @@ export function clientEventReminderTemplateDefinition(): Record<string, unknown>
               "Policy expiry",
               "in a month",
               "Hi Jane, just a heads up that your policy is up for renewal next month — happy to walk you through the options if useful.",
-              "https://app.example.com/dashboard?lead=00000000-0000-0000-0000-000000000000",
+              "https://app.example.com/contacts/00000000-0000-0000-0000-000000000000",
             ],
           ],
         },

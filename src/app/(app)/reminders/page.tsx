@@ -7,6 +7,8 @@ import { describeLeadTime } from "@/lib/notify/client-event-reminder"
 import { REMINDER_STATUS_PILL } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { CopyButton } from "@/components/copy-button"
+import { CoverageBanner } from "@/components/coverage-banner"
+import { getCoverage } from "@/app/actions/coverage"
 import { CalendarClock, Inbox } from "lucide-react"
 
 export const dynamic = "force-dynamic"
@@ -56,6 +58,10 @@ export default async function RemindersPage({
 
   const tenant = await requireTenant()
   const admin = createAdminClient()
+
+  // Loaded here rather than in the shell: an empty queue and a queue that can
+  // never fill look identical, and this is the page where that matters.
+  const coverage = await getCoverage()
 
   const { data: business } = await admin
     .from("businesses")
@@ -154,6 +160,8 @@ export default async function RemindersPage({
           </Link>
         )}
       </div>
+
+      <CoverageBanner coverage={coverage} />
 
       <div className="rounded-xl border bg-background shadow-sm">
         <div className="flex gap-1 overflow-x-auto border-b px-3 py-2">

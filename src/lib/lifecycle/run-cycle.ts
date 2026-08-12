@@ -40,7 +40,9 @@ import {
   sendClientEventReminder,
   reminderDeepLink,
   describeLeadTime,
+  buildReminderComponents,
 } from "@/lib/notify/client-event-reminder"
+import { recordSandboxMessage, renderReminderBody } from "@/lib/sandbox/record"
 import { NO_GUARDRAILS } from "@/lib/guardrails"
 import { appPublicUrl } from "@/lib/env"
 import type { ContactEvent, ReminderRule, TeamMember, PlannedReminder } from "./types"
@@ -458,13 +460,17 @@ async function deliverOne(
     ? drafted ?? fallbackSuggestion(event.event_type, firstName)
     : "(suggestions are turned off for this reminder)"
 
-  const res = await sendClientEventReminder(to, {
+  // Built once and shared with the transcript below, so the sandbox can never
+  // show something different from what was actually sent.
+  const alertParams = {
     clientLabel: lead.name ?? firstName,
     eventLabel: event.label || humaniseEventType(event.event_type),
     whenText,
     suggestion,
     deepLink: reminderDeepLink(appPublicUrl(), lead.id),
-  })
+  }
+
+  const res = await sendClientEventReminder(to, alertParams)
 
   if (!res.ok) {
     // "Not configured" is permanent for this deployment — do not burn retries
@@ -496,5 +502,24 @@ async function deliverOne(
       `[lifecycle] reminder ${row.id} delivered (${res.whatsappMessageId}) but could not be recorded`,
     )
   }
+
+  // The sandbox transcript. Reads the params back out of the components that
+  // were actually sent, so it shows the CLAMPED, whitespace-collapsed values
+  // Meta received — not the originals. Best-effort; see src/lib/sandbox.
+  const params = (
+    (buildReminderComponents(alertParams)[0]?.parameters ?? []) as Array<{ text: string }>
+  ).map((p) => p.text)
+  await recordSandboxMessage(admin, {
+    businessId: row.business_id,
+    fromRole: "system",
+    toRole: "agent",
+    toNumber: to,
+    body: renderReminderBody(params),
+    templateName: "client_event_reminder",
+    templateParams: params,
+    reminderId: row.id,
+    leadId: lead.id,
+  })
+
   return "sent"
 }

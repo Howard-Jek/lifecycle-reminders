@@ -118,7 +118,7 @@ describe("buildReminderComponents", () => {
     eventLabel: "Policy expiry",
     whenText: "in a month",
     suggestion: "Hi Jane, your policy is up for renewal soon.",
-    deepLink: "https://app.example.com/dashboard?lead=abc",
+    deepLink: "https://app.example.com/contacts/abc",
   }
 
   it("emits five body params in order", () => {
@@ -128,7 +128,7 @@ describe("buildReminderComponents", () => {
       "Policy expiry",
       "in a month",
       "Hi Jane, your policy is up for renewal soon.",
-      "https://app.example.com/dashboard?lead=abc",
+      "https://app.example.com/contacts/abc",
     ])
   })
 

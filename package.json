@@ -11,7 +11,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "reminders:tick": "tsx scripts/tick.ts",
-    "template:register": "tsx scripts/register-reminder-template.ts"
+    "template:register": "tsx scripts/register-reminder-template.ts",
+    "preflight": "tsx scripts/preflight.ts",
+    "seed:demo": "tsx scripts/seed-demo.ts",
+    "db:push": "supabase db push",
+    "db:reset": "supabase db reset"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.64",
@@ -43,6 +47,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.1",
+    "supabase": "^2.113.0",
     "tailwindcss": "^4",
     "tsx": "^4.19.2",
     "typescript": "^5",
