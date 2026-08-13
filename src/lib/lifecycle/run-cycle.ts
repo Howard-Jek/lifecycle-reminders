@@ -429,7 +429,11 @@ async function deliverOne(
     return "skipped"
   }
 
-  const firstName = (lead.name ?? "").trim().split(/\s+/)[0] || "there"
+  // The full name goes to the model, which decides how to address them. Taking
+  // the first whitespace token as a "first name" is wrong for most Chinese,
+  // Korean and Vietnamese names, where the family name comes first — it
+  // produced "Hi Goh" for Goh Jia Hui.
+  const clientName = (lead.name ?? "").trim()
   const daysUntil = daysBetween(todayInTimezone(new Date(), ctx.timezone), row.occurrence_date)
   const whenText = describeLeadTime(daysUntil)
 
@@ -441,7 +445,7 @@ async function deliverOne(
   // model failure downgrades to a safe generic line rather than blocking it.
   const drafted = wantsDraft
     ? await draftSuggestion({
-        clientFirstName: firstName,
+        clientName,
         eventType: event.event_type,
         eventLabel: event.label,
         whenText,
@@ -457,13 +461,13 @@ async function deliverOne(
   // scripted text. Meta requires all five body params, so send an explicit
   // marker rather than a message.
   const suggestion = wantsDraft
-    ? drafted ?? fallbackSuggestion(event.event_type, firstName)
+    ? drafted ?? fallbackSuggestion(event.event_type)
     : "(suggestions are turned off for this reminder)"
 
   // Built once and shared with the transcript below, so the sandbox can never
   // show something different from what was actually sent.
   const alertParams = {
-    clientLabel: lead.name ?? firstName,
+    clientLabel: clientName || "your client",
     eventLabel: event.label || humaniseEventType(event.event_type),
     whenText,
     suggestion,

@@ -40,7 +40,12 @@ talking to the client directly.
 </role>
 
 <rules>
-  <rule>Write as the AGENT, in first person, to the client by first name.</rule>
+  <rule>Write as the AGENT, in first person, to the client.</rule>
+  <rule>You are given the client's FULL NAME as their agent recorded it. Choose how to
+  address them, and choose carefully: name order is not universal. In most Chinese,
+  Korean and Vietnamese names the FAMILY name comes first — "Goh Jia Hui" is Ms Goh,
+  and greeting her "Hi Goh" is wrong in the same way "Hi Smith" would be. When the
+  given name is not obvious, greet them warmly without a name rather than guess.</rule>
   <rule>Under 60 words. WhatsApp style — warm, plain, human. Not an email, no "Dear".</rule>
   <rule>One message. No subject line, no sign-off block, no placeholders like [name].</rule>
   <rule>Reference the specific event naturally. A birthday is a greeting, NOT a sales pitch — do not attach an offer to it.</rule>
@@ -52,7 +57,8 @@ talking to the client directly.
 `.trim()
 
 export type SuggestionInput = {
-  clientFirstName: string
+  /** The client's full name, exactly as their agent recorded it. */
+  clientName: string
   /** 'birthday' | 'policy_expiry' | … — free text, straight from the event. */
   eventType: string
   /** Operator's own label for the event, when they set one. */
@@ -84,7 +90,7 @@ function renderFacts(label: string, obj: Record<string, unknown>): string {
 
 export function buildSuggestionPrompt(input: SuggestionInput): string {
   return [
-    `<client><first_name>${escapeXml(input.clientFirstName)}</first_name></client>`,
+    `<client><full_name>${escapeXml(input.clientName)}</full_name></client>`,
     `<event>`,
     `  <type>${escapeXml(input.eventType)}</type>`,
     input.eventLabel ? `  <label>${escapeXml(input.eventLabel)}</label>` : "",
@@ -102,11 +108,15 @@ export function buildSuggestionPrompt(input: SuggestionInput): string {
 
 /** A safe, generic line used when drafting is off or fails. Deliberately says
  * nothing specific — an agent can send it as-is without checking any facts. */
-export function fallbackSuggestion(eventType: string, firstName: string): string {
+export function fallbackSuggestion(eventType: string): string {
+  // Deliberately nameless. Picking a form of address from a full name is a
+  // judgement call — which is why the model does it — and this line exists for
+  // exactly the moments the model was unavailable. Guessing here would put
+  // "Hi Goh" in front of a client whose given name is Jia Hui.
   if (eventType === "birthday") {
-    return `Hi ${firstName}, wishing you a very happy birthday! Hope you have a great day.`
+    return "Happy birthday! Hope you have a lovely day."
   }
-  return `Hi ${firstName}, just reaching out about something coming up on your account — do you have a few minutes this week for a quick chat?`
+  return "Hi! Just reaching out about something coming up on your account — do you have a few minutes this week for a quick chat?"
 }
 
 /**

@@ -157,7 +157,7 @@ const NO_GUARDRAILS: Guardrails = { enabled: false, rules: [], bannedWords: [] }
 describe("buildSuggestionPrompt", () => {
   it("includes the event, the client and the agent", () => {
     const p = buildSuggestionPrompt({
-      clientFirstName: "Jane",
+      clientName: "Goh Jia Hui",
       eventType: "policy_expiry",
       eventLabel: "AIA HealthShield",
       whenText: "in a month",
@@ -166,7 +166,7 @@ describe("buildSuggestionPrompt", () => {
       agentName: "Jasmine",
       guardrails: NO_GUARDRAILS,
     })
-    expect(p).toContain("Jane")
+    expect(p).toContain("Goh Jia Hui")
     expect(p).toContain("policy_expiry")
     expect(p).toContain("AIA-123")
     expect(p).toContain("Jasmine")
@@ -174,7 +174,7 @@ describe("buildSuggestionPrompt", () => {
 
   it("escapes values so a stray angle bracket can't break the XML blocks", () => {
     const p = buildSuggestionPrompt({
-      clientFirstName: "Jane",
+      clientName: "Goh Jia Hui",
       eventType: "birthday",
       eventLabel: null,
       whenText: "today",
@@ -189,7 +189,7 @@ describe("buildSuggestionPrompt", () => {
 
   it("skips nested objects rather than dumping [object Object]", () => {
     const p = buildSuggestionPrompt({
-      clientFirstName: "Jane",
+      clientName: "Goh Jia Hui",
       eventType: "birthday",
       eventLabel: null,
       whenText: "today",
@@ -205,10 +205,13 @@ describe("buildSuggestionPrompt", () => {
 
 describe("fallbackSuggestion", () => {
   it("is safe to send unedited — states no facts the agent must verify", () => {
-    const birthday = fallbackSuggestion("birthday", "Jane")
-    const other = fallbackSuggestion("policy_expiry", "Jane")
+    const birthday = fallbackSuggestion("birthday")
+    const other = fallbackSuggestion("policy_expiry")
     for (const msg of [birthday, other]) {
-      expect(msg).toContain("Jane")
+      // Deliberately NAMELESS. Choosing a form of address from a full name is
+      // judgement, and this line is what runs when the model was unavailable.
+      // Guessing put "Hi Goh" in front of a client whose given name is Jia Hui.
+      expect(msg).not.toMatch(/\bHi [A-Z]/)
       expect(msg).not.toMatch(/\$|\d{2,}|%/) // no amounts, dates or percentages
     }
     expect(birthday).toMatch(/birthday/i)
