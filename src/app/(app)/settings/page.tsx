@@ -1,17 +1,20 @@
 import { listReminderRules } from "@/app/actions/reminder-rules"
 import { listIngestTokens } from "@/app/actions/ingest-tokens"
 import { getBusinessProfile } from "@/app/actions/business"
+import { getWhatsappSetup } from "@/app/actions/whatsapp"
 import { RulesClient } from "./rules-client"
 import { TokensClient } from "./tokens-client"
+import { WhatsappClient } from "./whatsapp-client"
 import { ProfileClient } from "./profile-client"
 
 export const dynamic = "force-dynamic"
 
 export default async function SettingsPage() {
-  const [rules, tokens, profile] = await Promise.all([
+  const [rules, tokens, profile, whatsapp] = await Promise.all([
     listReminderRules(),
     listIngestTokens(),
     getBusinessProfile(),
+    getWhatsappSetup(),
   ])
 
   return (
@@ -24,6 +27,7 @@ export default async function SettingsPage() {
       </div>
 
       <RulesClient rules={rules} />
+      <WhatsappClient setup={whatsapp} />
       <ProfileClient profile={profile} />
       <TokensClient tokens={tokens} />
     </div>
