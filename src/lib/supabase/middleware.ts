@@ -35,8 +35,12 @@ export async function updateSession(request: NextRequest) {
 
   const path = request.nextUrl.pathname
   const isAuthRoute = path.startsWith("/signin") || path.startsWith("/signup")
+  // The landing page is the one signed-out surface that is not a form. It
+  // renders for everyone and swaps its own call to action when a session
+  // exists, so it must not be bounced to sign-in.
+  const isPublic = path === "/"
 
-  if (!user && !isAuthRoute) {
+  if (!user && !isAuthRoute && !isPublic) {
     const url = request.nextUrl.clone()
     url.pathname = "/signin"
     url.searchParams.set("next", path)

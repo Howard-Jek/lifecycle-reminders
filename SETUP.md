@@ -15,15 +15,31 @@ The app needs its own project. It does **not** touch GomaAI's database.
    - Project URL → `NEXT_PUBLIC_SUPABASE_URL`
    - `anon` `public` key → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
    - `service_role` key → `SUPABASE_SERVICE_ROLE_KEY` — **server-only, never ship it to a browser**
-3. Apply the migrations:
+3. Apply the schema. **Use the SQL editor — skip the CLI.**
 
 ```bash
-npx supabase login
-npx supabase link --project-ref <your-project-ref>
-npx supabase db push
+npm run db:bundle
 ```
 
-`link` prompts for the database password from step 1. If you'd rather not use the CLI, open the SQL editor and paste each file in `supabase/migrations/` in filename order instead — they're plain SQL.
+That writes `supabase/bundle.sql`: all three migrations, already in the right order. Open the Supabase dashboard → **SQL Editor → New query**, paste the whole file, Run.
+
+No login, no database password, no connection string — none of which are needed to create eleven tables.
+
+<details>
+<summary>Why not <code>npx supabase login</code>?</summary>
+
+It has three ways to fail before it does anything useful:
+
+- **`login` needs a TTY and a browser.** Outside an interactive terminal it exits with `LegacyLoginMissingTokenError`. If you must use it, `SUPABASE_ACCESS_TOKEN=<token> npx supabase ...` skips the browser flow entirely — generate a token at [supabase.com/dashboard/account/tokens](https://supabase.com/dashboard/account/tokens).
+- **`npx supabase` only resolves the local copy when your shell is inside this repo.** Run it anywhere else and npx goes to the registry instead. `cd ~/Documents/Claude/work/lifecycle-reminders` first.
+- **`link` wants the database password**, and `db push --db-url` wants the connection string percent-encoded — a password with a `@` or `#` in it breaks it silently.
+
+If you'd still rather use the CLI, this skips both `login` and `link`:
+
+```bash
+npx supabase db push --db-url "<Session pooler string from Dashboard → Connect>"
+```
+</details>
 
 > **Apply all three locally. Apply only the middle one to GomaAI.** `..._platform_standins.sql` and `..._sandbox.sql` exist so this app can run alone; `..._lifecycle_events.sql` is the piece that eventually merges into the host. The file headers say so in capitals.
 

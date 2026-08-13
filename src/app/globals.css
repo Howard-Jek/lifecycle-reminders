@@ -161,3 +161,29 @@
     @apply font-sans;
   }
 }
+
+/* The landing page's one orchestrated moment: the date ledger arrives top to
+   bottom, so the two marked rows land last. Deliberately the only animation on
+   the page — scattered effects are what make a design feel machine-made. */
+@keyframes ledger-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ledger-row {
+  opacity: 0;
+  animation: ledger-in 480ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ledger-row {
+    opacity: 1;
+    animation: none;
+  }
+}

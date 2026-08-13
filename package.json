@@ -15,7 +15,8 @@
     "preflight": "tsx scripts/preflight.ts",
     "seed:demo": "tsx scripts/seed-demo.ts",
     "db:push": "supabase db push",
-    "db:reset": "supabase db reset"
+    "db:reset": "supabase db reset",
+    "db:bundle": "tsx scripts/sql-bundle.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.64",
