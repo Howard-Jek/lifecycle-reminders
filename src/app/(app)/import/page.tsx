@@ -44,7 +44,10 @@ export default async function ImportPage() {
         <section className="rounded-xl border bg-card p-6 shadow-sm ring-1 ring-foreground/5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-base font-semibold">Recent imports</h2>
-            <Link href="/import/review" className="text-sm font-medium text-brand-ink hover:underline">
+            <Link
+              href="/import/review"
+              className="inline-flex min-h-6 items-center rounded-lg text-sm font-medium text-brand-ink hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+            >
               Review queue
             </Link>
           </div>

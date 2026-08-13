@@ -8,6 +8,8 @@ import { REMINDER_STATUS_PILL } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { CopyButton } from "@/components/copy-button"
 import { CoverageBanner } from "@/components/coverage-banner"
+import { SetupChecklistSection } from "@/components/onboarding/setup-checklist-section"
+import { WelcomeTour } from "@/components/onboarding/welcome-tour"
 import { getCoverage } from "@/app/actions/coverage"
 import { CalendarClock, Inbox } from "lucide-react"
 
@@ -102,8 +104,30 @@ export default async function RemindersPage({
 
   if (mine && myMemberId) query = query.eq("member_id", myMemberId)
 
-  const { data, error } = await query
+  // How many are behind each tab, so "Needs attention" can say so without
+  // being opened. `head: true` — these are counts, no rows cross the wire.
+  const countFor = (id: TabId) => {
+    let q = admin
+      .from("reminders")
+      .select("id", { count: "exact", head: true })
+      .eq("business_id", tenant.businessId)
+    if (id === "due") q = q.eq("status", "queued").lte("due_at", nowIso)
+    else if (id === "upcoming") q = q.eq("status", "queued").gt("due_at", nowIso)
+    else if (id === "sent") q = q.eq("status", "sent")
+    else q = q.in("status", ["failed", "skipped"])
+    if (mine && myMemberId) q = q.eq("member_id", myMemberId)
+    return q
+  }
+
+  const [{ data, error }, ...tabCountResults] = await Promise.all([
+    query,
+    ...TABS.map((t) => countFor(t.id)),
+  ])
   const rows = (data ?? []) as ReminderRow[]
+  const tabCounts = new Map<TabId, number>(
+    // A failed count is `null`, which must not render as a confident "0".
+    TABS.map((t, i) => [t.id, tabCountResults[i]?.count ?? -1]),
+  )
 
   // Event + contact detail for just the rows on screen.
   const eventIds = Array.from(new Set(rows.map((r) => r.event_id)))
@@ -161,25 +185,58 @@ export default async function RemindersPage({
         )}
       </div>
 
+      <WelcomeTour />
+      {/* Rendered inline, NOT behind Suspense. A `fallback={null}` boundary
+          reserves no space, so the checklist streamed in after first paint and
+          shoved the whole inbox down — 415px of movement on the page an
+          operator opens every morning, worst for the new operator the wizard
+          exists for. The cost it was avoiding is now bounded elsewhere: the
+          template state is memoised for five minutes and its fetch is aborted
+          at three seconds, and when WhatsApp is unconfigured there is no
+          network call at all. A rare, capped stall beats a guaranteed jump. */}
+      <SetupChecklistSection />
       <CoverageBanner coverage={coverage} />
 
       <div className="rounded-xl border bg-background shadow-sm">
-        <div className="flex gap-1 overflow-x-auto border-b px-3 py-2">
-          {TABS.map((t) => (
-            <Link
-              key={t.id}
-              href={`/reminders?tab=${t.id}${mine ? "&mine=1" : ""}`}
-              aria-current={t.id === tab ? "page" : undefined}
-              className={cn(
-                "inline-flex h-7 shrink-0 items-center rounded-lg px-3 text-sm font-medium transition-colors",
-                t.id === tab
-                  ? "bg-muted text-foreground"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
-              )}
-            >
-              {t.label}
-            </Link>
-          ))}
+        {/* Wraps rather than scrolls. Four tabs plus their counts are wider
+            than a phone, and a horizontal scroll strip hid "Needs attention"
+            past its right edge with nothing to say it was there — which is
+            precisely the tab nobody would think to go looking for. */}
+        <div className="flex flex-wrap gap-1 border-b px-3 py-2">
+          {TABS.map((t) => {
+            const count = tabCounts.get(t.id) ?? -1
+            return (
+              <Link
+                key={t.id}
+                href={`/reminders?tab=${t.id}${mine ? "&mine=1" : ""}`}
+                aria-current={t.id === tab ? "page" : undefined}
+                className={cn(
+                  "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors",
+                  t.id === tab
+                    ? "bg-muted text-foreground"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                )}
+              >
+                {t.label}
+                {count > 0 && (
+                  // "Needs attention" is the tab nobody thinks to open, so the
+                  // count is the whole point: it is the only way that tab can
+                  // ask to be looked at. Amber only there — everywhere else a
+                  // number is information, not a problem.
+                  <span
+                    className={cn(
+                      "inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[0.65rem] tabular-nums",
+                      t.id === "attention"
+                        ? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                        : "bg-foreground/5 text-muted-foreground",
+                    )}
+                  >
+                    {count}
+                  </span>
+                )}
+              </Link>
+            )
+          })}
         </div>
 
         {error ? (
@@ -254,6 +311,20 @@ export default async function RemindersPage({
               )
             })}
           </ul>
+        )}
+
+        {/* The list is capped at PAGE_SIZE and there is no pager yet. The tab
+            badge counts every row, so without this line a tab reading 137
+            would show 50 and simply stop — the badge making a truncation
+            visible that used to be merely silent. Say it plainly instead. */}
+        {rows.length >= PAGE_SIZE && (tabCounts.get(tab) ?? 0) > rows.length && (
+          <p className="border-t px-5 py-3 text-sm text-muted-foreground">
+            Showing the first <span className="tabular-nums">{rows.length}</span> of{" "}
+            <span className="tabular-nums">{tabCounts.get(tab)}</span>.{" "}
+            {tab === "sent"
+              ? "Older ones are further down the record."
+              : "Work through these and the rest follow."}
+          </p>
         )}
       </div>
     </div>

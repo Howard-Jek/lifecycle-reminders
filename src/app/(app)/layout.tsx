@@ -5,7 +5,9 @@ import { createAdminClient } from "@/lib/supabase/admin"
 import { Wordmark } from "@/components/wordmark"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { NavLink } from "@/components/shell/nav-link"
+import { MobileNav } from "@/components/shell/mobile-nav"
 import { SignOutMenuItem } from "@/components/shell/sign-out-item"
+import { ReplayTourItem } from "@/components/shell/replay-tour-item"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import {
   DropdownMenu,
@@ -53,29 +55,34 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <div className="mx-auto flex h-14 max-w-7xl items-center gap-2 px-4 sm:px-6">
           <Link
             href="/reminders"
-            className="mr-2 flex shrink-0 items-center sm:mr-8"
+            className="mr-1 flex h-9 shrink-0 items-center rounded-lg px-1 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none sm:mr-6"
             aria-label="Lifecycle home"
           >
             <Wordmark />
           </Link>
 
-          {/* Scrolls rather than wraps: the links are wider than a phone, and
-              the controls beside them include the only way to sign out. */}
-          <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+          {/* Two navs, one per size class, rather than one that scrolls. The
+              scrolling strip put Settings and Sandbox off-screen at 375px with
+              nothing to indicate they were there. */}
+          <div className="flex min-w-0 flex-1 items-center sm:hidden">
+            <MobileNav items={NAV} pendingReviews={pendingReviews ?? 0} />
+          </div>
+
+          <nav className="hidden min-w-0 flex-1 items-center gap-1 sm:flex">
             {NAV.map((item) => (
               <NavLink key={item.href} href={item.href} label={item.label} />
             ))}
             {pendingReviews ? (
               <Link
                 href="/import/review"
-                className="ml-1 inline-flex h-6 shrink-0 items-center rounded-full bg-amber-500/10 px-2.5 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-500/20 dark:text-amber-400"
+                className="ml-1 inline-flex h-6 shrink-0 items-center rounded-full bg-amber-500/10 px-2.5 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-500/20 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none dark:text-amber-400"
               >
-                {pendingReviews} to review
+                {pendingReviews}&nbsp;to review
               </Link>
             ) : null}
           </nav>
 
-          <div className="flex shrink-0 items-center gap-3">
+          <div className="flex shrink-0 items-center gap-1 sm:gap-3">
             <ThemeToggle />
             <DropdownMenu>
               <DropdownMenuTrigger className="relative flex h-8 w-8 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring">
@@ -89,6 +96,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
                   <p className="wrap-anywhere text-sm font-medium">{tenant.email}</p>
                 </div>
                 <DropdownMenuSeparator />
+                <ReplayTourItem />
                 <SignOutMenuItem />
               </DropdownMenuContent>
             </DropdownMenu>

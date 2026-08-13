@@ -10,6 +10,7 @@ import {
   type TemplateStatus,
 } from "@/lib/notify/template-admin"
 import { CLIENT_EVENT_REMINDER_TEMPLATE } from "@/lib/notify/client-event-reminder"
+import { forgetTemplateState } from "./onboarding"
 import type { ActionResult } from "./team-members"
 
 export type WhatsappSetup = {
@@ -65,7 +66,12 @@ export async function submitReminderTemplate(): Promise<ActionResult<string>> {
   const result = await submitTemplate(creds)
   if (!result.ok) return { ok: false, error: result.error }
 
+  // The reminder inbox memoises this state; without dropping it the checklist
+  // would go on saying "submit the template" for up to five minutes after it
+  // had been submitted.
+  await forgetTemplateState()
   revalidatePath("/settings")
+  revalidatePath("/reminders")
   return { ok: true, data: result.id ?? "submitted" }
 }
 
@@ -84,6 +90,8 @@ export async function refreshTemplateStatus(): Promise<
   if (!creds) return { ok: false, error: "WhatsApp credentials are not configured." }
 
   const status = await fetchTemplateStatus(creds)
+  await forgetTemplateState()
   revalidatePath("/settings")
+  revalidatePath("/reminders")
   return { ok: true, data: status }
 }

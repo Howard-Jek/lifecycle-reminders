@@ -1,11 +1,12 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useRef, useState, useTransition } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { AlertTriangle, CheckCircle2, Upload } from "lucide-react"
+import { AlertTriangle, CheckCircle2, FileSpreadsheet, Upload } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { cn } from "@/lib/utils"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import {
   previewSheet,
@@ -125,28 +126,8 @@ export function ImportClient({ defaultCountry }: { defaultCountry: string }) {
       )}
 
       {!preview ? (
-        <form
-          action={onFile}
-          className="rounded-xl border border-dashed bg-card p-10 text-center shadow-sm"
-        >
-          <div className="mx-auto w-fit rounded-full bg-muted p-3">
-            <Upload className="size-5 text-muted-foreground" strokeWidth={1.75} />
-          </div>
-          <h2 className="mt-4 text-base font-semibold">Choose a spreadsheet</h2>
-          <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-            .csv or .xlsx, up to 10 MB and 20,000 rows. Nothing is written until you confirm how
-            the columns map.
-          </p>
-          <input
-            type="file"
-            name="file"
-            accept=".csv,.xlsx,.xlsm,.txt"
-            required
-            className="mx-auto mt-6 block w-full max-w-sm cursor-pointer rounded-lg border border-input bg-background px-3 py-2 text-sm file:mr-3 file:rounded-md file:border-0 file:bg-muted file:px-3 file:py-1 file:text-sm file:font-medium"
-          />
-          <Button type="submit" className="mt-4" disabled={pending}>
-            {pending ? "Reading…" : "Read file"}
-          </Button>
+        <form action={onFile}>
+          <FileDropzone pending={pending} />
         </form>
       ) : (
         <>
@@ -345,6 +326,163 @@ export function ImportClient({ defaultCountry }: { defaultCountry: string }) {
           </div>
         </>
       )}
+    </div>
+  )
+}
+
+/** Bytes as the operator would say them. */
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  const kb = bytes / 1024
+  if (kb < 1024) return `${Math.round(kb)} KB`
+  return `${(kb / 1024).toFixed(1)} MB`
+}
+
+/** Kept beside the input's `accept`, which only ever filters the picker dialog
+ * — a dropped file is subject to no filter at all. */
+const ACCEPTED_EXTENSIONS = [".csv", ".xlsx", ".xlsm", ".txt"]
+
+/**
+ * Choose a spreadsheet.
+ *
+ * The input is transparent and stretched over the message rather than hidden,
+ * so the input ITSELF is the click and tap target across the whole zone —
+ * rather than a 1×1px box that only works because a label happens to wrap it.
+ * The ring is drawn on the label through `focus-within`, so a keyboard user
+ * sees the same affordance a mouse user does.
+ *
+ * The submit button sits outside that label deliberately: inside it, one click
+ * would both submit the form and re-open the file picker, because the click
+ * bubbles to the label.
+ */
+function FileDropzone({ pending }: { pending: boolean }) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [dragging, setDragging] = useState(false)
+  const [chosen, setChosen] = useState<{ name: string; size: number } | null>(null)
+  const [rejected, setRejected] = useState<string | null>(null)
+
+  /** @returns whether the file was accepted. */
+  function take(files: FileList | null): boolean {
+    const file = files?.[0]
+    if (!file) {
+      setChosen(null)
+      setRejected(null)
+      return false
+    }
+
+    const name = file.name.toLowerCase()
+    if (!ACCEPTED_EXTENSIONS.some((ext) => name.endsWith(ext))) {
+      // Said here rather than after the upload: the server rejects it too, but
+      // only once the whole file has crossed the wire.
+      setChosen(null)
+      setRejected(`${file.name} is not a spreadsheet. Use ${ACCEPTED_EXTENSIONS.join(", ")}.`)
+      return false
+    }
+
+    setRejected(null)
+    setChosen({ name: file.name, size: file.size })
+    return true
+  }
+
+  return (
+    <div
+      onDragOver={(e) => {
+        e.preventDefault()
+        setDragging(true)
+      }}
+      onDragLeave={(e) => {
+        // Moving between the input, the label and the button all fire
+        // dragleave on this element; without the containment check the
+        // highlight flickers the whole way across the zone.
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false)
+      }}
+      onDrop={(e) => {
+        e.preventDefault()
+        setDragging(false)
+        // Assigning to `.files` is what makes a dropped file part of the form
+        // submission — the server action reads FormData, not this component's
+        // state, so the input has to actually hold the file.
+        if (inputRef.current && e.dataTransfer.files.length > 0) {
+          // Only adopt it if it passes — otherwise the input would be holding a
+          // file the UI says it rejected, and the form would submit it.
+          if (take(e.dataTransfer.files)) inputRef.current.files = e.dataTransfer.files
+          else inputRef.current.value = ""
+        }
+      }}
+      className={cn(
+        "flex flex-col items-center rounded-xl border border-dashed bg-card p-10 text-center shadow-sm transition-colors",
+        dragging ? "border-brand bg-brand/5" : "hover:bg-muted/40",
+      )}
+    >
+      {/* The label covers the message but NOT the button below it. With the
+          button inside, one click would both submit the form and re-open the
+          file picker, because the click bubbles to the label. */}
+      {/* The ring is on the label, not the outer card: the card also contains
+          the submit button, and lighting the whole drop zone when focus is on
+          "Read file" says the file field is focused when it isn't. */}
+      <label className="relative flex w-full cursor-pointer flex-col items-center rounded-lg focus-within:ring-3 focus-within:ring-ring/50">
+        <input
+          ref={inputRef}
+          type="file"
+          name="file"
+          accept=".csv,.xlsx,.xlsm,.txt"
+          required
+          onChange={(e) => {
+            if (!take(e.target.files)) e.target.value = ""
+          }}
+          className="absolute inset-0 size-full cursor-pointer opacity-0"
+        />
+
+        <span
+          className={cn(
+            "rounded-full p-3 transition-colors",
+            chosen ? "bg-emerald-500/10" : "bg-muted",
+          )}
+        >
+          {chosen ? (
+            <FileSpreadsheet
+              className="size-5 text-emerald-600 dark:text-emerald-400"
+              strokeWidth={1.75}
+            />
+          ) : (
+            <Upload className="size-5 text-muted-foreground" strokeWidth={1.75} />
+          )}
+        </span>
+
+        {chosen ? (
+          <>
+            <span className="mt-4 text-base font-semibold wrap-anywhere">{chosen.name}</span>
+            <span className="mt-1 text-sm tabular-nums text-muted-foreground">
+              {formatSize(chosen.size)} · choose a different file
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="mt-4 text-base font-semibold">
+              Drop a spreadsheet here, or click to choose
+            </span>
+            <span className="mt-1 max-w-md text-sm text-muted-foreground">
+              .csv or .xlsx, up to 10 MB and 20,000 rows. Nothing is written until you confirm how
+              the columns map.
+            </span>
+          </>
+        )}
+      </label>
+
+      {rejected && (
+        <p className="mt-4 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {rejected}
+        </p>
+      )}
+
+      {/* Not disabled when no file is chosen. `Button` carries
+          `disabled:pointer-events-none`, so a disabled submit swallows the
+          click and says nothing at all — worse than the plain input this
+          replaced, where the browser's own `required` validation spoke up.
+          Left enabled, that validation still fires and points at the field. */}
+      <Button type="submit" className="mt-5" disabled={pending}>
+        {pending ? "Reading…" : chosen ? "Read file" : "Choose a file first"}
+      </Button>
     </div>
   )
 }

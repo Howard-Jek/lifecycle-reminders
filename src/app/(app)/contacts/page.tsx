@@ -122,9 +122,15 @@ export default async function ContactsPage({
                 {rows.map((row) => (
                   <TableRow key={row.id as string}>
                     <TableCell className="pl-5 font-medium">
+                      {/* Same treatment as the reminder list's link to this
+                          exact destination. A column of brand colour is a lot,
+                          and toning it down here was tempting — but the host's
+                          link colour is the host's to change, and forking it in
+                          one table buys a calmer page at the cost of the app
+                          disagreeing with itself about what a link looks like. */}
                       <Link
                         href={`/contacts/${row.id}`}
-                        className="text-brand-ink hover:underline"
+                        className="rounded-sm text-brand-ink hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
                       >
                         {row.name as string}
                       </Link>

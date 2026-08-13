@@ -94,6 +94,9 @@ export async function fetchTemplateStatus(
   creds: WhatsappCredentials,
   name = CLIENT_EVENT_REMINDER_TEMPLATE,
   language = CLIENT_EVENT_REMINDER_LANGUAGE,
+  /** Lets a caller with a deadline actually cancel the request rather than
+   * merely stop waiting for it. */
+  signal?: AbortSignal,
 ): Promise<TemplateStatus> {
   const url =
     `https://graph.facebook.com/${GRAPH_API_VERSION}/${creds.wabaId}/message_templates` +
@@ -104,7 +107,10 @@ export async function fetchTemplateStatus(
   try {
     // The token travels in the header, never the query string: Graph and every
     // proxy between here and it log full URLs.
-    res = await fetch(url, { headers: { Authorization: `Bearer ${creds.accessToken}` } })
+    res = await fetch(url, {
+      headers: { Authorization: `Bearer ${creds.accessToken}` },
+      signal,
+    })
   } catch (e) {
     return { ok: false, error: `could not reach graph.facebook.com — ${(e as Error).message}` }
   }

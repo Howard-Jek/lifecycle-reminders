@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { CopyButton } from "@/components/copy-button"
+import { RowActions } from "@/components/row-actions"
 import {
   createTeamMember,
   updateTeamMember,
@@ -115,18 +116,24 @@ export function TeamClient({
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-[26%] pl-5">Name</TableHead>
-                <TableHead className="w-[22%]">WhatsApp</TableHead>
-                <TableHead className="w-[22%]">Email</TableHead>
-                <TableHead className="w-[12%]">Role</TableHead>
-                <TableHead className="w-[18%] pr-5 text-right">Calendar</TableHead>
+                {/* Email and Role fold away below `sm` rather than pushing the
+                    table wider than a phone. Neither is lost: the role moves
+                    under the name, and the email is one tap away in Edit. */}
+                <TableHead className="w-[40%] pl-5 sm:w-[24%]">Name</TableHead>
+                <TableHead className="w-[30%] sm:w-[20%]">WhatsApp</TableHead>
+                <TableHead className="hidden sm:table-cell sm:w-[24%]">Email</TableHead>
+                <TableHead className="hidden sm:table-cell sm:w-[10%]">Role</TableHead>
+                <TableHead className="w-[20%] sm:w-[14%]">Calendar</TableHead>
+                <TableHead className="w-[10%] pr-5 sm:w-[8%]">
+                  <span className="sr-only">Actions</span>
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {members.map((member) => (
                 <TableRow key={member.id} className={member.active ? undefined : "opacity-50"}>
                   <TableCell className="pl-5 font-medium">
-                    <span className="flex items-center gap-2">
+                    <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
                       {member.display_name}
                       {!member.active && (
                         <Badge variant="outline" className="text-muted-foreground">
@@ -134,74 +141,87 @@ export function TeamClient({
                         </Badge>
                       )}
                     </span>
+                    <span className="mt-0.5 block text-xs font-normal text-muted-foreground sm:hidden">
+                      {member.role}
+                    </span>
                   </TableCell>
                   <TableCell className="font-mono text-xs tabular-nums">
                     {member.whatsapp_number}
                   </TableCell>
-                  <TableCell className="text-muted-foreground">{member.email ?? "—"}</TableCell>
-                  <TableCell>
+                  <TableCell className="hidden text-muted-foreground sm:table-cell">
+                    {member.email ?? "—"}
+                  </TableCell>
+                  <TableCell className="hidden sm:table-cell">
                     <Badge variant={member.role === "owner" ? "secondary" : "ghost"}>
                       {member.role}
                     </Badge>
                   </TableCell>
-                  <TableCell className="pr-5">
-                    <div className="flex flex-wrap items-center justify-end gap-1.5">
-                      <Button
-                        variant="outline"
-                        size="xs"
-                        disabled={pending}
-                        onClick={() =>
-                          startTransition(async () => {
-                            const result = await issueCalendarFeed(member.id)
-                            if (result.ok) {
-                              setFreshUrl({ memberId: member.id, url: result.data })
-                              router.refresh()
-                            } else setError(result.error)
-                          })
-                        }
-                      >
-                        {feeds[member.id] ? (
-                          <RotateCw data-icon="inline-start" />
-                        ) : (
-                          <CalendarPlus data-icon="inline-start" />
-                        )}
-                        {feeds[member.id] ? "Re-issue" : "Issue"}
-                      </Button>
-                      {feeds[member.id] && (
-                        <Button
-                          variant="ghost"
-                          size="xs"
-                          disabled={pending}
-                          onClick={() => run(() => revokeCalendarFeed(member.id))}
-                        >
-                          Revoke
-                        </Button>
+                  {/* The calendar feed keeps its own column: it is the only
+                      action here with a visible state — issued or not — and
+                      burying that state in a menu means the answer to "does
+                      this agent have a feed?" costs a click per row. */}
+                  <TableCell>
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      disabled={pending}
+                      onClick={() =>
+                        startTransition(async () => {
+                          const result = await issueCalendarFeed(member.id)
+                          if (result.ok) {
+                            setFreshUrl({ memberId: member.id, url: result.data })
+                            router.refresh()
+                          } else setError(result.error)
+                        })
+                      }
+                    >
+                      {feeds[member.id] ? (
+                        <RotateCw data-icon="inline-start" />
+                      ) : (
+                        <CalendarPlus data-icon="inline-start" />
                       )}
-                      <Button
-                        variant="ghost"
-                        size="xs"
-                        disabled={pending}
-                        onClick={() => {
-                          setEditingId(member.id)
-                          setDraft({
-                            display_name: member.display_name,
-                            email: member.email ?? "",
-                            whatsapp_number: member.whatsapp_number,
-                            role: member.role as "owner" | "agent",
-                          })
-                        }}
-                      >
-                        Edit
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="xs"
-                        disabled={pending}
-                        onClick={() => run(() => setTeamMemberActive(member.id, !member.active))}
-                      >
-                        {member.active ? "Deactivate" : "Reactivate"}
-                      </Button>
-                    </div>
+                      {feeds[member.id] ? "Re-issue" : "Issue"}
+                    </Button>
+                  </TableCell>
+                  <TableCell className="pr-5 text-right">
+                    <RowActions
+                      label={`Actions for ${member.display_name}`}
+                      actions={[
+                        {
+                          label: "Edit details",
+                          disabled: pending,
+                          onSelect: () => {
+                            setEditingId(member.id)
+                            setDraft({
+                              display_name: member.display_name,
+                              email: member.email ?? "",
+                              whatsapp_number: member.whatsapp_number,
+                              role: member.role as "owner" | "agent",
+                            })
+                          },
+                        },
+                        ...(feeds[member.id]
+                          ? [
+                              {
+                                label: "Revoke calendar feed",
+                                disabled: pending,
+                                destructive: true,
+                                onSelect: () => run(() => revokeCalendarFeed(member.id)),
+                              },
+                            ]
+                          : []),
+                        {
+                          // Not destructive: deactivating is reversible, and
+                          // marking it so made this one item change colour AND
+                          // jump across the separator between an active and an
+                          // inactive member — the same action moving around
+                          // under the cursor row by row.
+                          label: member.active ? "Deactivate" : "Reactivate",
+                          disabled: pending,
+                          onSelect: () => run(() => setTeamMemberActive(member.id, !member.active)),
+                        },
+                      ]}
+                    />
                   </TableCell>
                 </TableRow>
               ))}

@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { RowActions } from "@/components/row-actions"
 import { humaniseEventType } from "@/lib/lifecycle/labels"
 import { SEND_WINDOWS, SEND_WINDOW_LABEL, type SendWindow } from "@/lib/types"
 import {
@@ -215,11 +216,17 @@ export function RulesClient({ rules }: { rules: ReminderRule[] }) {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead className="w-[28%]">Event</TableHead>
-              <TableHead className="w-[16%]">Lead time</TableHead>
-              <TableHead className="w-[18%]">Window</TableHead>
-              <TableHead className="w-[20%]">Audience</TableHead>
-              <TableHead className="w-[18%] text-right">&nbsp;</TableHead>
+              {/* Below `sm` every column but the event name folds into a line
+                  under it. This card has `p-6`, so a phone leaves under 300px
+                  for the table — enough for one column of prose and the actions
+                  menu, and not enough for four. */}
+              <TableHead className="w-[85%] sm:w-[32%]">Event</TableHead>
+              <TableHead className="hidden sm:table-cell sm:w-[16%]">Lead time</TableHead>
+              <TableHead className="hidden sm:table-cell sm:w-[18%]">Window</TableHead>
+              <TableHead className="hidden sm:table-cell sm:w-[22%]">Audience</TableHead>
+              <TableHead className="w-[10%] text-right">
+                <span className="sr-only">Actions</span>
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -239,76 +246,83 @@ export function RulesClient({ rules }: { rules: ReminderRule[] }) {
                       </Badge>
                     )}
                   </span>
+                  {/* `whitespace-normal` because the shared TableCell sets
+                      `whitespace-nowrap` on every cell. Without it this line
+                      cannot wrap, so it sets the table's min-content width and
+                      pushes the actions menu outside the card's scroll
+                      container — visible only if you think to swipe the table
+                      sideways, which nobody does. */}
+                  <span className="mt-0.5 block text-xs font-normal whitespace-normal text-muted-foreground sm:hidden">
+                    <span className="tabular-nums">
+                      {rule.offset_days === 0 ? "On the day" : `${rule.offset_days} days before`}
+                    </span>{" "}
+                    · {SEND_WINDOW_LABEL[rule.send_window as SendWindow]} ·{" "}
+                    {rule.audience === "all_members" ? "Whole team" : "Assigned agent"}
+                  </span>
                 </TableCell>
-                <TableCell className="tabular-nums">
+                <TableCell className="hidden tabular-nums sm:table-cell">
                   {rule.offset_days === 0 ? "On the day" : `${rule.offset_days} days before`}
                 </TableCell>
-                <TableCell className="text-muted-foreground">
+                <TableCell className="hidden text-muted-foreground sm:table-cell">
                   {SEND_WINDOW_LABEL[rule.send_window as SendWindow]}
                 </TableCell>
-                <TableCell className="text-muted-foreground">
+                <TableCell className="hidden text-muted-foreground sm:table-cell">
                   {rule.audience === "all_members" ? "Whole team" : "Assigned agent"}
                 </TableCell>
-                <TableCell>
-                  <div className="flex items-center justify-end gap-1.5">
-                    <Button
-                      variant="ghost"
-                      size="xs"
-                      disabled={pending}
-                      onClick={() => {
-                        setEditingId(rule.id)
-                        setDraft({
-                          event_type: rule.event_type,
-                          offset_days: rule.offset_days,
-                          audience: rule.audience as RuleInput["audience"],
-                          suggest_message: rule.suggest_message,
-                          send_window: rule.send_window as SendWindow,
-                          active: rule.active,
-                        })
-                      }}
-                    >
-                      Edit
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="xs"
-                      disabled={pending}
-                      onClick={() =>
-                        run(() =>
-                          updateReminderRule(rule.id, {
+                <TableCell className="text-right">
+                  <RowActions
+                    label={`Actions for the ${humaniseEventType(rule.event_type)} rule`}
+                    actions={[
+                      {
+                        label: "Edit rule",
+                        disabled: pending,
+                        onSelect: () => {
+                          setEditingId(rule.id)
+                          setDraft({
                             event_type: rule.event_type,
                             offset_days: rule.offset_days,
                             audience: rule.audience as RuleInput["audience"],
                             suggest_message: rule.suggest_message,
                             send_window: rule.send_window as SendWindow,
-                            active: !rule.active,
-                          }),
-                        )
-                      }
-                    >
-                      {rule.active ? "Pause" : "Resume"}
-                    </Button>
-                    <Button
-                      variant="destructive"
-                      size="xs"
-                      disabled={pending}
-                      onClick={() => {
-                        // Deleting cascades to this rule's reminders, including
-                        // ones already sent — that record is often the only
-                        // proof the agent was told. Pausing is the safe option,
-                        // so say so rather than quietly doing it.
-                        if (
-                          !confirm(
-                            "Delete this rule? Its reminders are deleted too, including ones already sent. Pause it instead to stop new ones.",
+                            active: rule.active,
+                          })
+                        },
+                      },
+                      {
+                        label: rule.active ? "Pause rule" : "Resume rule",
+                        disabled: pending,
+                        onSelect: () =>
+                          run(() =>
+                            updateReminderRule(rule.id, {
+                              event_type: rule.event_type,
+                              offset_days: rule.offset_days,
+                              audience: rule.audience as RuleInput["audience"],
+                              suggest_message: rule.suggest_message,
+                              send_window: rule.send_window as SendWindow,
+                              active: !rule.active,
+                            }),
+                          ),
+                      },
+                      {
+                        label: "Delete rule",
+                        disabled: pending,
+                        destructive: true,
+                        onSelect: () => {
+                          // Deleting cascades to this rule's reminders, including
+                          // ones already sent — that record is often the only
+                          // proof the agent was told. Pausing is the safe option,
+                          // so say so rather than quietly doing it.
+                          if (
+                            !confirm(
+                              "Delete this rule? Its reminders are deleted too, including ones already sent. Pause it instead to stop new ones.",
+                            )
                           )
-                        )
-                          return
-                        run(() => deleteReminderRule(rule.id))
-                      }}
-                    >
-                      Delete
-                    </Button>
-                  </div>
+                            return
+                          run(() => deleteReminderRule(rule.id))
+                        },
+                      },
+                    ]}
+                  />
                 </TableCell>
               </TableRow>
             ))}

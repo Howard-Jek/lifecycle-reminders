@@ -36,7 +36,10 @@ export default async function ReviewPage() {
   return (
     <div className="space-y-6">
       <div>
-        <Link href="/import" className="text-sm text-muted-foreground hover:underline">
+        <Link
+          href="/import"
+          className="inline-flex min-h-6 items-center rounded-lg text-sm text-muted-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        >
           ← Import
         </Link>
         <h1 className="mt-1 text-2xl font-bold tracking-tight">Review queue</h1>

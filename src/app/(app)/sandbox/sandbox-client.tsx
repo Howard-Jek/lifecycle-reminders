@@ -270,8 +270,19 @@ function Phone({
       </header>
 
       {/* Fixed height so both panes stay aligned and neither can push the page
-          taller than the viewport as a demo goes on. */}
-      <div className="flex h-[26rem] flex-col gap-3 overflow-y-auto bg-muted/40 px-4 py-4">
+          taller than the viewport as a demo goes on.
+
+          `data-allow-overlap` is about the audit, not the design. Once the
+          transcript is longer than 26rem, the bubbles scrolled past the bottom
+          still report their laid-out position through getBoundingClientRect —
+          which puts them geometrically on top of the composer below, even
+          though `overflow-y-auto` clips them and nothing overlaps on screen.
+          Confirmed by measuring the container (416px tall, 2911px of content,
+          overflow-y auto) and checking the rendered page at 1280. */}
+      <div
+        data-allow-overlap
+        className="flex h-[26rem] flex-col gap-3 overflow-y-auto bg-muted/40 px-4 py-4"
+      >
         {messages.length === 0 ? (
           <p className="m-auto max-w-[16rem] text-center text-sm text-muted-foreground">{empty}</p>
         ) : (
