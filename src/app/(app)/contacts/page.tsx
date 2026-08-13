@@ -1,6 +1,7 @@
 import Link from "next/link"
 import { requireTenant } from "@/lib/tenant"
 import { createAdminClient } from "@/lib/supabase/admin"
+import { cn } from "@/lib/utils"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { ContactSearch } from "./search"
@@ -43,14 +44,18 @@ export default async function ContactsPage({
     if (safe) query = query.or(`name.ilike.%${safe}%,phone.ilike.%${safe}%,email.ilike.%${safe}%`)
   }
 
-  const { data, count, error } = await query
+  // The roster does not depend on which page of contacts is being shown, so it
+  // rides alongside rather than after. A Supabase round-trip is ~130ms from a
+  // laptop regardless of what it returns; sequencing two independent queries
+  // doubles that for nothing.
+  const [{ data, count, error }, memberRes] = await Promise.all([
+    query,
+    admin.from("team_members").select("id, display_name").eq("business_id", tenant.businessId),
+  ])
   const rows = data ?? []
-
-  const { data: memberRows } = await admin
-    .from("team_members")
-    .select("id, display_name")
-    .eq("business_id", tenant.businessId)
-  const members = new Map((memberRows ?? []).map((m) => [m.id as string, m.display_name as string]))
+  const members = new Map(
+    (memberRes.data ?? []).map((m) => [m.id as string, m.display_name as string]),
+  )
 
   // Event counts for the rows on screen only.
   const counts = new Map<string, number>()
@@ -187,16 +192,26 @@ function PageLink({
   disabled: boolean
   label: string
 }) {
+  // Both states share a size so the row does not reflow as you page through,
+  // and the enabled one clears the 24px minimum hit area — as a bare text link
+  // it was 31×20px, which only became visible once there were enough contacts
+  // to need a second page.
+  const shared = "inline-flex h-8 items-center rounded-lg px-2.5 text-sm font-medium"
+
   if (disabled) {
-    return <span className="text-sm text-muted-foreground/40">{label}</span>
+    return <span className={cn(shared, "text-muted-foreground/40")}>{label}</span>
   }
+
   const search = new URLSearchParams()
   if (q) search.set("q", q)
   if (page > 0) search.set("page", String(page))
   return (
     <Link
       href={`/contacts${search.size ? `?${search}` : ""}`}
-      className="text-sm font-medium text-brand-ink hover:underline"
+      className={cn(
+        shared,
+        "text-brand-ink transition-colors hover:bg-muted hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+      )}
     >
       {label}
     </Link>

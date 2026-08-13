@@ -1,3 +1,4 @@
+import { cookies } from "next/headers"
 import Link from "next/link"
 import { requireTenant } from "@/lib/tenant"
 import { createAdminClient } from "@/lib/supabase/admin"
@@ -8,7 +9,9 @@ import { REMINDER_STATUS_PILL } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { CopyButton } from "@/components/copy-button"
 import { CoverageBanner } from "@/components/coverage-banner"
-import { SetupChecklistSection } from "@/components/onboarding/setup-checklist-section"
+import { SetupChecklist } from "@/components/onboarding/setup-checklist"
+import { CHECKLIST_COLLAPSED_COOKIE } from "@/lib/onboarding/steps"
+import { getSetupSteps } from "@/app/actions/onboarding"
 import { WelcomeTour } from "@/components/onboarding/welcome-tour"
 import { getCoverage } from "@/app/actions/coverage"
 import { CalendarClock, Inbox } from "lucide-react"
@@ -61,22 +64,36 @@ export default async function RemindersPage({
   const tenant = await requireTenant()
   const admin = createAdminClient()
 
-  // Loaded here rather than in the shell: an empty queue and a queue that can
-  // never fill look identical, and this is the page where that matters.
-  const coverage = await getCoverage()
+  // ONE wave, not four.
+  //
+  // These are independent of each other, and a Supabase round-trip costs the
+  // same whether it returns one number or five hundred rows — measured at
+  // ~130ms from a laptop, and it is the count of sequential waits, not the
+  // weight of any query, that this page's latency is made of. Awaiting them in
+  // series cost four times what awaiting them together does, for nothing.
+  //
+  // Coverage is loaded here rather than in the shell: an empty queue and a
+  // queue that can never fill look identical, and this is the page where that
+  // matters.
+  const [coverage, businessRes, memberRes, setupSteps, cookieStore] = await Promise.all([
+    getCoverage(),
+    admin
+      .from("businesses")
+      .select("timezone")
+      .eq("id", tenant.businessId)
+      .maybeSingle<{ timezone: string | null }>(),
+    admin
+      .from("team_members")
+      .select("id, display_name, auth_user_id")
+      .eq("business_id", tenant.businessId),
+    getSetupSteps(),
+    cookies(),
+  ])
 
-  const { data: business } = await admin
-    .from("businesses")
-    .select("timezone")
-    .eq("id", tenant.businessId)
-    .maybeSingle<{ timezone: string | null }>()
-  const timezone = business?.timezone || "Asia/Singapore"
+  const timezone = businessRes.data?.timezone || "Asia/Singapore"
   const today = todayInTimezone(new Date(), timezone)
 
-  const { data: memberRows } = await admin
-    .from("team_members")
-    .select("id, display_name, auth_user_id")
-    .eq("business_id", tenant.businessId)
+  const memberRows = memberRes.data
   const members = new Map(
     (memberRows ?? []).map((m) => [m.id as string, m.display_name as string]),
   )
@@ -129,35 +146,43 @@ export default async function RemindersPage({
     TABS.map((t, i) => [t.id, tabCountResults[i]?.count ?? -1]),
   )
 
-  // Event + contact detail for just the rows on screen.
+  // Event + contact detail for just the rows on screen, in ONE round trip.
+  //
+  // This was two: fetch the events, collect their lead ids, then fetch the
+  // leads. The second could not start until the first came back, so it was a
+  // full round-trip of pure waiting to resolve a foreign key the database can
+  // follow itself. PostgREST embeds it.
   const eventIds = Array.from(new Set(rows.map((r) => r.event_id)))
   const eventById = new Map<
     string,
-    { event_type: string; label: string | null; lead_id: string }
+    { event_type: string; label: string | null; lead_id: string; lead_name: string | null }
   >()
-  const leadById = new Map<string, string>()
 
   if (eventIds.length > 0) {
+    type EventRow = {
+      id: string
+      event_type: string
+      label: string | null
+      lead_id: string
+      // One-to-one through the FK, but supabase-js types an embed as possibly
+      // an array, so it is narrowed on read rather than asserted here.
+      leads: { name: string } | { name: string }[] | null
+    }
     const { data: events } = await admin
       .from("contact_events")
-      .select("id, event_type, label, lead_id")
+      .select("id, event_type, label, lead_id, leads(name)")
       .eq("business_id", tenant.businessId)
       .in("id", eventIds)
+      .returns<EventRow[]>()
+
     for (const e of events ?? []) {
-      eventById.set(e.id as string, {
-        event_type: e.event_type as string,
-        label: e.label as string | null,
-        lead_id: e.lead_id as string,
+      const lead = Array.isArray(e.leads) ? e.leads[0] : e.leads
+      eventById.set(e.id, {
+        event_type: e.event_type,
+        label: e.label,
+        lead_id: e.lead_id,
+        lead_name: lead?.name ?? null,
       })
-    }
-    const leadIds = Array.from(new Set([...eventById.values()].map((e) => e.lead_id)))
-    if (leadIds.length > 0) {
-      const { data: leads } = await admin
-        .from("leads")
-        .select("id, name")
-        .eq("business_id", tenant.businessId)
-        .in("id", leadIds)
-      for (const l of leads ?? []) leadById.set(l.id as string, l.name as string)
     }
   }
 
@@ -192,9 +217,13 @@ export default async function RemindersPage({
           operator opens every morning, worst for the new operator the wizard
           exists for. The cost it was avoiding is now bounded elsewhere: the
           template state is memoised for five minutes and its fetch is aborted
-          at three seconds, and when WhatsApp is unconfigured there is no
-          network call at all. A rare, capped stall beats a guaranteed jump. */}
-      <SetupChecklistSection />
+          at three seconds, when WhatsApp is unconfigured there is no network
+          call at all, and its counts ride in the batch above rather than
+          costing a wave of their own. */}
+      <SetupChecklist
+        steps={setupSteps}
+        defaultCollapsed={cookieStore.get(CHECKLIST_COLLAPSED_COOKIE)?.value === "1"}
+      />
       <CoverageBanner coverage={coverage} />
 
       <div className="rounded-xl border bg-background shadow-sm">
@@ -249,7 +278,7 @@ export default async function RemindersPage({
           <ul className="divide-y">
             {rows.map((row) => {
               const event = eventById.get(row.event_id)
-              const clientName = event ? leadById.get(event.lead_id) : undefined
+              const clientName = event?.lead_name ?? undefined
               const label = event
                 ? event.label || humaniseEventType(event.event_type)
                 : "Event removed"
