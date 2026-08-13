@@ -81,16 +81,17 @@ export function ImportClient({ defaultCountry }: { defaultCountry: string }) {
           // watching their team's phones light up fifteen minutes later.
           <p className="mx-auto mt-4 max-w-md rounded-lg bg-blue-500/10 px-3 py-2 text-sm text-blue-700 dark:text-blue-400">
             <span className="tabular-nums">{done.dueContacts}</span>{" "}
-            {done.dueContacts === 1 ? "contact has a date" : "contacts have dates"} already inside
-            the lead time — their reminders go out on the next run. Pause a rule in Settings first
-            if you would rather they didn&apos;t.
+            {done.dueContacts === 1 ? "contact has a date" : "contacts have dates"}{" "}
+            already inside the lead time — their reminders go out on the next run. Pause a rule in
+            Settings first if you would rather they didn&apos;t.
           </p>
         )}
 
         {done.review > 0 && (
           <p className="mx-auto mt-4 max-w-md rounded-lg bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
-            <span className="tabular-nums">{done.review}</span> rows need a decision — an agent
-            name that matched nothing, or a date that could not be read. Nothing was guessed.
+            <span className="tabular-nums">{done.review}</span>{" "}
+            {done.review === 1 ? "row needs" : "rows need"} a decision — an agent name that matched
+            nothing, or a date that could not be read. Nothing was guessed.
           </p>
         )}
         <div className="mt-6 flex justify-center gap-2">
@@ -99,7 +100,7 @@ export function ImportClient({ defaultCountry }: { defaultCountry: string }) {
               href="/import/review"
               className="inline-flex h-9 items-center rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
             >
-              Review {done.review} rows
+              Review {done.review} {done.review === 1 ? "row" : "rows"}
             </Link>
           )}
           <Button
