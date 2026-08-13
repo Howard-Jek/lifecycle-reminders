@@ -8,8 +8,18 @@
  *
  *   npx tsx scripts/seed-testdata.ts --email you@example.com
  *   npx tsx scripts/seed-testdata.ts --email you@example.com --count 250
+ *   npx tsx scripts/seed-testdata.ts --email you@example.com --imminent 60
  *   npx tsx scripts/seed-testdata.ts --email you@example.com --clean
  *   npx tsx scripts/seed-testdata.ts --email you@example.com --dry
+ *
+ * `--imminent N` exists because of a subtlety that makes a freshly seeded
+ * database look broken. Dates spread across a year produce a queue that is
+ * almost entirely UPCOMING, and the inbox opens on DUE — so the first thing you
+ * see after seeding is "Nothing due right now", which is indistinguishable from
+ * having no data at all. These N contacts carry dates already inside their lead
+ * time, so the next tick has real work. Ask for more than MAX_DELIVERIES_PER_RUN
+ * (40) and the cap leaves the remainder sitting in Due, which is what that tab
+ * looks like on a working morning.
  *
  * Every row it writes is tagged `context.seed = 'testdata'`, so `--clean`
  * removes exactly what this wrote and cannot touch a real import. Nothing here
@@ -35,7 +45,8 @@ try {
 }
 
 const USAGE =
-  "Usage: npx tsx scripts/seed-testdata.ts --email <operator email> [--count 250] [--clean] [--dry]"
+  "Usage: npx tsx scripts/seed-testdata.ts --email <operator email> " +
+  "[--count 250] [--imminent 0] [--clean] [--dry]"
 
 /** The marker that makes `--clean` safe. */
 const SEED_TAG = "testdata"
@@ -52,9 +63,6 @@ const INDIAN_NAMES = ["Priya Devi Ramasamy","Ravi Chandran","Kavitha Menon","Sur
 const WESTERN_NAMES = ["Rachel Foo","Daniel Ho","Melissa Chong","Jonathan Seah","Clara Tay","Marcus Yeo"]
 
 const INSURERS = ["AIA","Great Eastern","Prudential","Manulife","Income","Etiqa","Singlife","HSBC Life"]
-
-/** Free text on purpose — the engine never learns what "insurance" is. */
-const EVENT_TYPES = ["birthday", "policy_expiry", "policy_review"] as const
 
 /** Deterministic PRNG (mulberry32), so a run is reproducible. */
 function makeRandom(seed: number) {
@@ -73,6 +81,8 @@ function main() {
   const email = emailIdx >= 0 ? argv[emailIdx + 1] : undefined
   const countIdx = argv.indexOf("--count")
   const count = countIdx >= 0 ? Number(argv[countIdx + 1]) : 250
+  const imminentIdx = argv.indexOf("--imminent")
+  const imminent = imminentIdx >= 0 ? Number(argv[imminentIdx + 1]) : 0
   const clean = argv.includes("--clean")
   const dry = argv.includes("--dry")
 
@@ -80,8 +90,18 @@ function main() {
     console.error(USAGE)
     process.exit(1)
   }
-  if (!Number.isFinite(count) || count < 1 || count > 5000) {
-    console.error("--count must be between 1 and 5000.")
+  // 0 is allowed so `--count 0 --imminent 60` can top up an existing book with
+  // work that is due now, without generating another spread of contacts.
+  if (!Number.isFinite(count) || count < 0 || count > 5000) {
+    console.error("--count must be between 0 and 5000.")
+    process.exit(1)
+  }
+  if (!Number.isFinite(imminent) || imminent < 0 || imminent > 1000) {
+    console.error("--imminent must be between 0 and 1000.")
+    process.exit(1)
+  }
+  if (count === 0 && imminent === 0 && !clean) {
+    console.error("Nothing to do — pass --count and/or --imminent.")
     process.exit(1)
   }
 
@@ -93,7 +113,7 @@ function main() {
   }
 
   const admin = createClient(url, key, { auth: { persistSession: false } })
-  run(admin, { email, count, clean, dry }).catch((error) => {
+  run(admin, { email, count, imminent, clean, dry }).catch((error) => {
     console.error(`[seed-testdata] ${(error as Error).message}`)
     process.exit(1)
   })
@@ -101,7 +121,7 @@ function main() {
 
 async function run(
   admin: SupabaseClient,
-  opts: { email: string; count: number; clean: boolean; dry: boolean },
+  opts: { email: string; count: number; imminent: number; clean: boolean; dry: boolean },
 ) {
   const businessId = await resolveBusiness(admin, opts.email)
   console.log(`\nBusiness ${businessId}  (${opts.email})`)
@@ -122,7 +142,11 @@ async function run(
   }
   console.log(`Roster: ${members.map((m) => m.display_name).join(", ")}`)
 
-  const book = generateBook(opts.count, members as { id: string; display_name: string }[])
+  const book = generateBook(
+    opts.count,
+    opts.imminent,
+    members as { id: string; display_name: string }[],
+  )
 
   console.log(
     `\nGenerating ${book.leads.length} contacts and ${book.events.length} dates` +
@@ -170,7 +194,11 @@ type SeedEvent = {
   recurrence: "none" | "yearly"
 }
 
-function generateBook(count: number, members: { id: string; display_name: string }[]) {
+function generateBook(
+  count: number,
+  imminent: number,
+  members: { id: string; display_name: string }[],
+) {
   const rand = makeRandom(20260813)
   const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)]
   const today = new Date()
@@ -235,6 +263,42 @@ function generateBook(count: number, members: { id: string; display_name: string
         event_type: "policy_review",
         event_date: iso(review),
         label: null,
+        recurrence: "none",
+      })
+    }
+  }
+
+  // Contacts whose dates are ALREADY inside their lead time, so the next tick
+  // has something to do. The offsets are chosen against the seeded rules —
+  // birthday at -7 and -0, policy_expiry at -30 and -7 — so every one of these
+  // is genuinely due rather than being forced due by fiddling with due_at.
+  for (let i = 0; i < imminent; i++) {
+    const name = generateName(rand, pick)
+    const phone = `+6588${String(500000 + i).padStart(6, "0").slice(-6)}`
+    usedPhones.add(phone)
+    leads.push({
+      name,
+      phone,
+      email: `${slug(name)}@example.com`,
+      memberId: rand() < 1 / 12 ? null : pick(members).id,
+    })
+
+    if (i % 2 === 0) {
+      // A birthday within the week: inside the -7 rule.
+      const bday = new Date(today)
+      bday.setFullYear(today.getFullYear() - (25 + Math.floor(rand() * 40)))
+      bday.setMonth(today.getMonth())
+      bday.setDate(today.getDate() + Math.floor(rand() * 6))
+      events.push({ phone, event_type: "birthday", event_date: iso(bday), label: null, recurrence: "yearly" })
+    } else {
+      // An expiry inside the -30 rule, some of them inside -7 as well.
+      const expiry = new Date(today)
+      expiry.setDate(today.getDate() + 1 + Math.floor(rand() * 26))
+      events.push({
+        phone,
+        event_type: "policy_expiry",
+        event_date: iso(expiry),
+        label: `${pick(INSURERS)} policy`,
         recurrence: "none",
       })
     }
