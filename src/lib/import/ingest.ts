@@ -13,6 +13,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { matchTeamMember } from "@/lib/lifecycle/match-member"
+import { previewDueForLeads, type DuePreview } from "@/lib/lifecycle/due-preview"
 import type { TeamMember } from "@/lib/lifecycle/types"
 import type { ReviewReason } from "@/lib/types"
 
@@ -56,6 +57,11 @@ export type IngestResult = {
   updatedRows: number
   eventsCreated: number
   reviewRows: number
+  /**
+   * How much of this import is already inside its lead time and will go out on
+   * the next tick. Surfaced so a burst is announced rather than a surprise.
+   */
+  due: DuePreview
   errors: string[]
 }
 
@@ -281,6 +287,15 @@ export async function ingestContacts(
     if (error) errors.push(`Review queue: ${error.message}`)
   }
 
+  // Computed AFTER the events land and attribution is applied, so it reflects
+  // the rows as they actually are — including the assignment this import just
+  // made, which decides who each reminder is addressed to.
+  const due = await previewDueForLeads(
+    admin,
+    businessId,
+    Array.from(new Set(leadIdByPhone.values())),
+  )
+
   const createdRows = deduped.filter((c) => !existingPhones.has(c.phone)).length
   const result: IngestResult = {
     importId,
@@ -289,6 +304,7 @@ export async function ingestContacts(
     updatedRows: deduped.length - createdRows,
     eventsCreated,
     reviewRows: reviews.length,
+    due,
     errors,
   }
 

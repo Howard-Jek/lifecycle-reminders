@@ -16,13 +16,32 @@ import type { ContactEvent, PlannedReminder, ReminderRule, TeamMember } from "./
 /**
  * How far past its due time a reminder may be and still be created.
  *
- * This exists to stop a first import blasting the team. An operator onboarding
- * 500 clients has a year of birthdays and policy dates behind them; without a
- * cutoff, every rule whose lead time has already elapsed would materialise as
- * due-in-the-past and the scheduler would fire them all at once. One day of
- * grace still catches anything that came due while the worker was down.
+ * The original rationale for this constant was wrong, and it made the value far
+ * too tight. It claimed to stop "a year of historical birthdays" firing on a
+ * first import — but occurrencesInHorizon only ever returns occurrences on or
+ * after today, so a birthday from last month resolves to NEXT year's date and
+ * its reminder is a year in the future. Historical dates never produced an
+ * overdue reminder in the first place.
+ *
+ * What this actually governs is the mid-window case: an occurrence that is
+ * genuinely upcoming, whose lead-time moment has already passed. A policy
+ * expiring in six days, with a −7 day rule, is due "yesterday". At one day of
+ * grace that client silently got nothing — and on a first import those are the
+ * MOST urgent clients in the book, not the least.
+ *
+ * Seven days is chosen against the seeded rule spacing (−30/−14/−7/−0) so that
+ * a mid-window contact fires its NEAREST rule and not its earlier ones: an
+ * expiry three days out fires −7 (four days late) while −30 (twenty-seven days
+ * late) stays suppressed. One reminder per event, not a pile.
+ *
+ * Firing late is safe because the wording is not baked in at materialise time:
+ * describeLeadTime() is computed at SEND time from the real occurrence, so a
+ * reminder created late still reads "in 3 days" rather than a stale "in a week".
+ *
+ * The import flags how many contacts land already inside their lead time, so a
+ * burst is something the operator is told about rather than ambushed by.
  */
-const MAX_OVERDUE_DAYS = 1
+export const MAX_OVERDUE_DAYS = 7
 
 export type PlanInput = {
   /** Events for ONE tenant. */

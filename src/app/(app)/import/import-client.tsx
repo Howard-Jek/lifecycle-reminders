@@ -31,6 +31,7 @@ export function ImportClient({ defaultCountry }: { defaultCountry: string }) {
     updated: number
     events: number
     review: number
+    dueContacts: number
   } | null>(null)
 
   const [nameColumn, setNameColumn] = useState("")
@@ -73,6 +74,19 @@ export function ImportClient({ defaultCountry }: { defaultCountry: string }) {
           <span className="tabular-nums">{done.updated}</span> updated,{" "}
           <span className="tabular-nums">{done.events}</span> dates recorded.
         </p>
+        {done.dueContacts > 0 && (
+          // Said plainly and BEFORE the review notice: this is the only outcome
+          // of an import that causes messages to leave the building, and an
+          // operator who uploads a book of clients should not discover it by
+          // watching their team's phones light up fifteen minutes later.
+          <p className="mx-auto mt-4 max-w-md rounded-lg bg-blue-500/10 px-3 py-2 text-sm text-blue-700 dark:text-blue-400">
+            <span className="tabular-nums">{done.dueContacts}</span>{" "}
+            {done.dueContacts === 1 ? "contact has a date" : "contacts have dates"} already inside
+            the lead time — their reminders go out on the next run. Pause a rule in Settings first
+            if you would rather they didn&apos;t.
+          </p>
+        )}
+
         {done.review > 0 && (
           <p className="mx-auto mt-4 max-w-md rounded-lg bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
             <span className="tabular-nums">{done.review}</span> rows need a decision — an agent

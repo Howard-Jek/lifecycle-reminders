@@ -135,6 +135,7 @@ In rough order of likelihood:
 | Symptom | Cause |
 |---|---|
 | Dates imported, queue stays empty | No rule matches that `event_type`. The banner on **Reminders** names it and suggests the fix. |
+| An import sent more messages than expected | Contacts whose date was already inside its lead time go out on the next run. The import screen reports how many before it happens — pause a rule in Settings first if you want a quiet import. |
 | Every reminder is `skipped` | No WhatsApp credentials, or no recipient — an unassigned contact falls back to the **owner**, and if no team member has `role = owner` there is nobody to fall back to. |
 | Reminders fire at the wrong hour | Business timezone is wrong or unset. |
 | Deep link goes nowhere | `APP_PUBLIC_URL` doesn't match where the app actually runs. |

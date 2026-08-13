@@ -176,6 +176,8 @@ export async function POST(request: Request) {
       updated: result.updatedRows,
       events_created: result.eventsCreated,
       needs_review: result.reviewRows,
+      // Already inside their lead time — these go out on the next tick.
+      due_now: result.due,
       errors: result.errors,
     })
   } catch (err) {

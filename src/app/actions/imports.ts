@@ -125,7 +125,16 @@ export type CommitInput = {
 
 export async function commitImport(
   input: CommitInput,
-): Promise<ActionResult<{ importId: string; created: number; updated: number; events: number; review: number }>> {
+): Promise<
+  ActionResult<{
+    importId: string
+    created: number
+    updated: number
+    events: number
+    review: number
+    dueContacts: number
+  }>
+> {
   const tenant = await requireTenant()
   sweepStash()
 
@@ -239,6 +248,7 @@ export async function commitImport(
         updated: result.updatedRows,
         events: result.eventsCreated,
         review: result.reviewRows,
+        dueContacts: result.due.contacts,
       },
     }
   } catch (err) {
