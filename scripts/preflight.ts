@@ -99,19 +99,57 @@ type CountQuery = PromiseLike<{ count: number | null; error: { message: string }
 
 type CountResult = { ok: true; count: number } | { ok: false; error: string }
 
-/** Counting never throws here — a dead connection is a finding, not a crash. */
+/**
+ * Counting never throws here — a dead connection is a finding, not a crash.
+ *
+ * `count === null` is treated as FAILURE, and that is the whole point. A HEAD
+ * request against a table that does not exist comes back 204 with no body, so
+ * PostgREST has nowhere to put the error and supabase-js reports
+ * `{ count: null, error: null }` — success, with no number. An earlier version
+ * read that as `count ?? 0` and cheerfully printed "businesses 0" for a
+ * completely empty project, which is precisely the situation this script
+ * exists to catch.
+ *
+ * A genuine exact count is always a number. Null means the question was never
+ * answered, whatever `error` says.
+ */
 async function runCount(query: CountQuery): Promise<CountResult> {
   try {
     const { count, error } = await query
     if (error) return { ok: false, error: error.message }
-    return { ok: true, count: count ?? 0 }
+    if (count === null) return { ok: false, error: NO_COUNT }
+    return { ok: true, count }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) }
   }
 }
 
+/** Sentinel meaning "the HEAD probe told us nothing" — replaced with the real
+ * message by countTable() below. */
+const NO_COUNT = "__no_count__"
+
 function countRows(admin: SupabaseClient, table: string): CountQuery {
   return admin.from(table).select("*", { count: "exact", head: true })
+}
+
+/**
+ * Count a table, falling back to a bodied request for the real error.
+ *
+ * HEAD is used first because it is the cheap path and it is what succeeds
+ * almost always. When it comes back without a count, one GET is issued purely
+ * to obtain PostgREST's actual message — "Could not find the table
+ * 'public.leads' in the schema cache" tells an operator exactly what is wrong;
+ * a bare "no count returned" does not.
+ */
+async function countTable(admin: SupabaseClient, table: string): Promise<CountResult> {
+  const head = await runCount(countRows(admin, table))
+  if (head.ok || head.error !== NO_COUNT) return head
+
+  const { error } = await admin.from(table).select("*").limit(1)
+  return {
+    ok: false,
+    error: error?.message ?? `no rows and no count returned for "${table}"`,
+  }
 }
 
 /** The tables this add-on owns, plus the host table they all hang off. */
@@ -303,7 +341,7 @@ async function main() {
     // or TLS retry — a doctor that takes half a minute to say "unreachable"
     // gets killed before it prints anything.
     const probeTable = TABLES[0]
-    const probe = await runCount(countRows(admin, probeTable))
+    const probe = await countTable(admin, probeTable)
 
     if (!probe.ok) {
       admin = null // downstream checks have nothing to read
@@ -311,8 +349,8 @@ async function main() {
         "FAIL",
         "Supabase",
         `cannot read "${probeTable}": ${probe.error}`,
-        "Almost always means the migrations were never applied. Run `npx supabase db push`, " +
-          "or paste supabase/migrations/*.sql into the SQL editor in filename order. " +
+        "Almost always means the schema was never applied. Run `npm run db:bundle`, then " +
+          "paste supabase/bundle.sql into the Supabase SQL editor and Run. " +
           "If the message names the API key or the host, the credentials or project URL are wrong.",
       )
     } else {
@@ -322,7 +360,7 @@ async function main() {
       const unreadable: string[] = []
       let detail = ""
       for (const table of TABLES.slice(1)) {
-        const res = await runCount(countRows(admin, table))
+        const res = await countTable(admin, table)
         if (res.ok) counts[table] = res.count
         else {
           unreadable.push(table)
@@ -335,9 +373,9 @@ async function main() {
           "FAIL",
           "Supabase",
           `connected, but cannot read ${unreadable.join(", ")}: ${detail}`,
-          "The lifecycle migration has not been applied to this project. Run " +
-            "`npx supabase db push`, or paste supabase/migrations/*.sql into the SQL editor " +
-            "in filename order.",
+          "The schema is only half applied. Run `npm run db:bundle` and paste " +
+            "supabase/bundle.sql into the Supabase SQL editor — it is safe to re-run, " +
+            "but check the editor output for the error that stopped it the first time.",
         )
       } else {
         report("PASS", "Supabase", TABLES.map((t) => `${t} ${counts[t]}`).join(", "))
