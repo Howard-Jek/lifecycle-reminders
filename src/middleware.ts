@@ -13,7 +13,8 @@ export const config = {
      *   /api/calendar/<token>  — an ICS feed; calendar clients send no cookies
      *   /api/v1/*              — token-authed ingest
      *   /api/cron/*            — CRON_SECRET
+     *   /api/health            — names missing config; must work when nothing else does
      */
-    "/((?!_next/static|_next/image|favicon.ico|api/calendar|api/v1|api/cron|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
+    "/((?!_next/static|_next/image|favicon.ico|api/calendar|api/v1|api/cron|api/health|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],
 }

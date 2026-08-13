@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { isProductionRuntime, isDryRun, assertEnv, appPublicUrl } from "@/lib/env"
+import { isProductionRuntime, isDryRun, assertEnv, appPublicUrl, missingEnv } from "@/lib/env"
 
 /** A complete, valid environment. Individual tests break one thing at a time. */
 const VALID = {
@@ -50,16 +50,34 @@ describe("assertEnv", () => {
     expect(() => assertEnv(VALID)).not.toThrow()
   })
 
-  it("names the variable that is missing", () => {
+  it("does NOT throw on missing config — it must still boot to explain itself", () => {
+    // The regression this pins. Throwing here served a blank 500 whose reason
+    // was in a function log, AND took /api/health down with it — the one
+    // endpoint that could have named the missing variable.
     const rest = { ...VALID }
     delete rest.SUPABASE_SERVICE_ROLE_KEY
-    expect(() => assertEnv(rest)).toThrow(/SUPABASE_SERVICE_ROLE_KEY/)
+    expect(() => assertEnv(rest)).not.toThrow()
   })
 
   it("names every missing variable at once, not just the first", () => {
     // Reporting one at a time turns a fresh deploy into five round-trips.
-    expect(() => assertEnv({ NODE_ENV: "development" })).toThrow(/NEXT_PUBLIC_SUPABASE_URL/)
-    expect(() => assertEnv({ NODE_ENV: "development" })).toThrow(/CRON_SECRET/)
+    const missing = missingEnv({ NODE_ENV: "development" })
+    expect(missing).toContain("NEXT_PUBLIC_SUPABASE_URL")
+    expect(missing).toContain("CRON_SECRET")
+    expect(missing).toHaveLength(5)
+  })
+
+  it("reports no missing variables for a complete environment", () => {
+    expect(missingEnv(VALID)).toEqual([])
+  })
+
+  it("still throws on a DANGEROUS config, unlike a merely missing one", () => {
+    // Two severities on purpose: absent config is a setup step, but a
+    // deployment that looks fine while shipping dead links is worse than down.
+    expect(() => assertEnv({ ...VALID, APP_PUBLIC_URL: "/app" })).toThrow()
+    expect(() =>
+      assertEnv({ ...VALID, NODE_ENV: "production", REMINDER_DRY_RUN: "1" }),
+    ).toThrow(/REMINDER_DRY_RUN/)
   })
 
   it("rejects a relative APP_PUBLIC_URL", () => {

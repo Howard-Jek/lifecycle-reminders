@@ -110,10 +110,23 @@ Set `REMINDER_DRY_RUN=0` (or delete the line). The app refuses to boot with it s
    - `CRON_SECRET` = `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
 3. `vercel.json` already schedules `/api/cron/process-reminders` every 15 minutes.
 
-> **Check your Vercel plan.** Hobby allows one cron invocation *per day*, which makes reminders effectively useless. On Hobby, point any external scheduler at the same endpoint:
-> ```bash
-> curl -X POST https://<your-app>/api/cron/process-reminders -H "Authorization: Bearer $CRON_SECRET"
-> ```
+### The cron schedule is plan-dependent
+
+`vercel.json` ships with **`0 1 * * *`** — once daily at 01:00 UTC, which is 9am Singapore. That is deliberate: **Hobby caps cron at one run per day**, and a more frequent schedule is rejected, so the shipped default is the one that deploys on any plan. 9am SGT is chosen to coincide with the `morning` send window, so a single daily run catches the bulk of the day's reminders at the right hour.
+
+**On Pro**, change it to every fifteen minutes — that is what the delivery budget and claim protocol are sized for:
+
+```json
+{ "crons": [{ "path": "/api/cron/process-reminders", "schedule": "*/15 * * * *" }] }
+```
+
+**Staying on Hobby?** Point any external scheduler (cron-job.org, GitHub Actions) at the same endpoint as often as you like — the engine does not care what triggers it, and re-running is always safe:
+
+```bash
+curl -X POST https://<your-app>/api/cron/process-reminders -H "Authorization: Bearer $CRON_SECRET"
+```
+
+Firing late is safe by design: `describeLeadTime` is computed at send time, so a reminder created late still reads "in 3 days" rather than a stale "in a week".
 
 ---
 

@@ -56,24 +56,46 @@ const REQUIRED = [
   "CRON_SECRET",
 ] as const
 
+/** Which required variables are absent. Names only — never values. */
+export function missingEnv(env: EnvLike = process.env): string[] {
+  return REQUIRED.filter((name) => !env[name]?.trim())
+}
+
 /**
- * Throw on a misconfigured environment, at boot, with the variable named.
+ * Check the environment at boot.
  *
- * Called from `instrumentation.ts`, so a bad deploy fails visibly instead of
- * serving 500s whose cause is three layers down a stack trace.
+ * Two different severities, deliberately, because they are two different
+ * problems:
+ *
+ * MISSING CONFIG is logged, loudly, but does NOT kill the process. Killing it
+ * was the original behaviour and it made a misconfigured deploy strictly
+ * harder to diagnose: the platform serves a blank 500, the reason sits in a
+ * function log nobody has opened yet, and `/api/health` — the one endpoint
+ * that could have named the missing variable — never gets to run either.
+ * Nothing unsafe happens from booting without a Supabase URL; requests simply
+ * fail, and now they fail with somewhere to look.
+ *
+ * A DANGEROUS CONFIG still throws. Those are conditions where running is worse
+ * than being down, because the app would appear to work while doing the wrong
+ * thing silently.
  */
 export function assertEnv(env: EnvLike = process.env): void {
-  const missing = REQUIRED.filter((name) => !env[name]?.trim())
+  const missing = missingEnv(env)
   if (missing.length > 0) {
-    throw new Error(
-      `Refusing to start: missing required environment variable${missing.length > 1 ? "s" : ""} ` +
-        `${missing.join(", ")}. See .env.example.`,
+    console.error(
+      `[env] MISSING REQUIRED VARIABLE${missing.length > 1 ? "S" : ""}: ${missing.join(", ")}. ` +
+        `The app will boot but requests that need them will fail. ` +
+        `Set them and redeploy — GET /api/health lists exactly what is absent.`,
     )
+    // Nothing below can be checked without the values, so stop here rather
+    // than throwing on a variable that is simply not there yet.
+    return
   }
 
   // APP_PUBLIC_URL ends up inside a WhatsApp template parameter as the deep
   // link. A relative or malformed value produces a message that looks fine and
-  // links nowhere, so it is checked here rather than discovered by an agent.
+  // links nowhere — a genuine silent failure, so this one still refuses to
+  // start rather than shipping dead links to real agents.
   const appUrl = env.APP_PUBLIC_URL!.trim()
   let parsed: URL
   try {
