@@ -1,7 +1,6 @@
-import { NextResponse } from "next/server"
-import { createHash } from "node:crypto"
 import { z } from "zod"
-import { createAdminClient } from "@/lib/supabase/admin"
+import { withApiToken } from "@/lib/api/handler"
+import { ok, badRequest, readJson } from "@/lib/api/respond"
 import { normalizePhone, parseCalendarDate, titleCaseName } from "@/lib/sanitize"
 import { ingestContacts, type IngestContact, type IngestRejection } from "@/lib/import/ingest"
 
@@ -15,7 +14,9 @@ import { ingestContacts, type IngestContact, type IngestRejection } from "@/lib/
  *
  * Auth is a bearer token compared by SHA-256 against `contact_ingest_tokens`.
  * The request carries no tenant identity of its own — the token IS the tenant
- * resolution, which is why its hash is globally unique.
+ * resolution, which is why its hash is globally unique. That check now lives in
+ * `lib/api/auth.ts` and is shared with every other v1 route: an auth check that
+ * exists twice is one that will eventually disagree with itself.
  */
 
 export const dynamic = "force-dynamic"
@@ -53,123 +54,90 @@ const BodySchema = z.object({
 })
 
 export async function POST(request: Request) {
-  const header = request.headers.get("authorization") ?? ""
-  const token = header.startsWith("Bearer ") ? header.slice(7).trim() : ""
-  if (!token) {
-    return NextResponse.json({ error: "missing bearer token" }, { status: 401 })
-  }
+  return withApiToken(request, "contacts.ingest", async ({ admin, caller }) => {
+    const json = await readJson(request)
+    if (!json.ok) return badRequest("body must be JSON")
 
-  const admin = createAdminClient()
-  const tokenHash = createHash("sha256").update(token).digest("hex")
+    const parsed = BodySchema.safeParse(json.body)
+    if (!parsed.success) return badRequest("invalid body", parsed.error.issues)
 
-  const { data: tokenRow } = await admin
-    .from("contact_ingest_tokens")
-    .select("id, business_id, revoked_at")
-    .eq("token_hash", tokenHash)
-    .maybeSingle<{ id: string; business_id: string; revoked_at: string | null }>()
+    const {
+      contacts: incoming,
+      default_country_code: countryCode,
+      date_format: dateFormat,
+    } = parsed.data
 
-  // One response for unknown and revoked alike — the difference is a probe.
-  if (!tokenRow || tokenRow.revoked_at) {
-    return NextResponse.json({ error: "invalid token" }, { status: 401 })
-  }
+    const contacts: IngestContact[] = []
+    const rejections: IngestRejection[] = []
 
-  let body: unknown
-  try {
-    body = await request.json()
-  } catch {
-    return NextResponse.json({ error: "body must be JSON" }, { status: 400 })
-  }
+    incoming.forEach((row, index) => {
+      const rowNumber = index + 1
+      const raw = row as unknown as Record<string, unknown>
 
-  const parsed = BodySchema.safeParse(body)
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: "invalid body", issues: parsed.error.issues.slice(0, 20) },
-      { status: 400 },
-    )
-  }
+      const name = titleCaseName(row.name ?? null)
+      if (!name) {
+        rejections.push({ rowNumber, reason: "missing_name", raw })
+        return
+      }
 
-  const { contacts: incoming, default_country_code: countryCode, date_format: dateFormat } =
-    parsed.data
-
-  const contacts: IngestContact[] = []
-  const rejections: IngestRejection[] = []
-
-  incoming.forEach((row, index) => {
-    const rowNumber = index + 1
-    const raw = row as unknown as Record<string, unknown>
-
-    const name = titleCaseName(row.name ?? null)
-    if (!name) {
-      rejections.push({ rowNumber, reason: "missing_name", raw })
-      return
-    }
-
-    const phone = normalizePhone(row.phone, countryCode ?? null)
-    if (!phone.phone) {
-      rejections.push({
-        rowNumber,
-        reason: "invalid_phone",
-        detail: phone.reason,
-        raw,
-        parsed: { name },
-      })
-      return
-    }
-
-    // An unreadable date is a row-level problem, not a contact-level one: the
-    // contact still lands, and the date goes to the review queue so nobody has
-    // to diff a spreadsheet to find out which cell was wrong.
-    const events = []
-    for (const event of row.events ?? []) {
-      const date = parseCalendarDate(event.date, dateFormat ?? null)
-      if (!date) {
+      const phone = normalizePhone(row.phone, countryCode ?? null)
+      if (!phone.phone) {
         rejections.push({
           rowNumber,
-          reason: "unparseable_date",
-          detail: `"${event.date}" for ${event.type}`,
+          reason: "invalid_phone",
+          detail: phone.reason,
           raw,
-          parsed: { name, phone: phone.phone },
+          parsed: { name },
         })
-        continue
+        return
       }
-      events.push({
-        event_type: event.type,
-        event_date: date,
-        label: event.label ?? null,
-        recurrence: event.recurrence ?? "none",
-        payload: event.payload ?? {},
+
+      // An unreadable date is a row-level problem, not a contact-level one: the
+      // contact still lands, and the date goes to the review queue so nobody has
+      // to diff a spreadsheet to find out which cell was wrong.
+      const events = []
+      for (const event of row.events ?? []) {
+        const date = parseCalendarDate(event.date, dateFormat ?? null)
+        if (!date) {
+          rejections.push({
+            rowNumber,
+            reason: "unparseable_date",
+            detail: `"${event.date}" for ${event.type}`,
+            raw,
+            parsed: { name, phone: phone.phone },
+          })
+          continue
+        }
+        events.push({
+          event_type: event.type,
+          event_date: date,
+          label: event.label ?? null,
+          recurrence: event.recurrence ?? "none",
+          payload: event.payload ?? {},
+        })
+      }
+
+      contacts.push({
+        rowNumber,
+        name,
+        phone: phone.phone,
+        email: row.email ?? null,
+        agentValue: row.agent ?? null,
+        events,
+        extra: row.extra ?? {},
+        raw,
       })
-    }
-
-    contacts.push({
-      rowNumber,
-      name,
-      phone: phone.phone,
-      email: row.email ?? null,
-      agentValue: row.agent ?? null,
-      events,
-      extra: row.extra ?? {},
-      raw,
     })
-  })
 
-  try {
     const result = await ingestContacts(admin, {
-      businessId: tokenRow.business_id,
+      businessId: caller.businessId,
       source: "api",
-      ingestTokenId: tokenRow.id,
+      ingestTokenId: caller.tokenId,
       contacts,
       rejections,
     })
 
-    // Best-effort: a failed touch must not fail the ingest.
-    await admin
-      .from("contact_ingest_tokens")
-      .update({ last_used_at: new Date().toISOString() })
-      .eq("id", tokenRow.id)
-
-    return NextResponse.json({
-      ok: true,
+    return ok({
       import_id: result.importId,
       received: result.totalRows,
       created: result.createdRows,
@@ -180,9 +148,5 @@ export async function POST(request: Request) {
       due_now: result.due,
       errors: result.errors,
     })
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    console.error("[ingest] failed:", message)
-    return NextResponse.json({ ok: false, error: message }, { status: 500 })
-  }
+  })
 }
