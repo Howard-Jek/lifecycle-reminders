@@ -10,7 +10,7 @@ export default async function SandboxPage() {
   const tenant = await requireTenant()
   const admin = createAdminClient()
 
-  const [messages, { data: contacts }, probe] = await Promise.all([
+  const [messages, { data: contacts }, probe, business] = await Promise.all([
     listSandboxMessages(),
     admin
       .from("leads")
@@ -22,6 +22,11 @@ export default async function SandboxPage() {
     // applied" — they look identical from an empty list, and only one of them
     // is the user's fault.
     admin.from("sandbox_messages").select("id", { head: true, count: "exact" }).limit(1),
+    admin
+      .from("businesses")
+      .select("timezone")
+      .eq("id", tenant.businessId)
+      .maybeSingle<{ timezone: string | null }>(),
   ])
 
   return (
@@ -34,6 +39,7 @@ export default async function SandboxPage() {
       )}
       dryRun={isDryRun()}
       tableMissing={Boolean(probe.error)}
+      timezone={business.data?.timezone || "Asia/Singapore"}
     />
   )
 }

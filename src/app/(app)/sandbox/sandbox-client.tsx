@@ -6,6 +6,7 @@ import { Play, RotateCcw, Send, Trash2, Info } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
+import { formatTimeOfDay } from "@/lib/format-time"
 import {
   runTickNow,
   sendAsAgent,
@@ -23,12 +24,15 @@ export function SandboxClient({
   senderConfigured,
   dryRun,
   tableMissing,
+  timezone,
 }: {
   messages: SandboxRow[]
   contacts: Contact[]
   senderConfigured: boolean
   dryRun: boolean
   tableMissing: boolean
+  /** The BUSINESS's timezone, not the viewer's — see lib/format-time.ts. */
+  timezone: string
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -158,6 +162,7 @@ export function SandboxClient({
           empty="No reminders delivered yet. Import some contacts, add a rule, then run a tick."
           messages={agentThread}
           mineRole="agent"
+          timezone={timezone}
           draft={agentDraft}
           onDraft={setAgentDraft}
           placeholder={
@@ -182,6 +187,7 @@ export function SandboxClient({
           empty="Nothing sent to this client yet."
           messages={clientThread}
           mineRole="client"
+          timezone={timezone}
           draft={clientDraft}
           onDraft={setClientDraft}
           placeholder="Reply as the client…"
@@ -231,6 +237,7 @@ function Phone({
   empty,
   messages,
   mineRole,
+  timezone,
   draft,
   onDraft,
   placeholder,
@@ -243,6 +250,7 @@ function Phone({
   empty: string
   messages: SandboxRow[]
   mineRole: "agent" | "client"
+  timezone: string
   draft: string
   onDraft: (v: string) => void
   placeholder: string
@@ -286,7 +294,9 @@ function Phone({
         {messages.length === 0 ? (
           <p className="m-auto max-w-[16rem] text-center text-sm text-muted-foreground">{empty}</p>
         ) : (
-          messages.map((m) => <Bubble key={m.id} message={m} mineRole={mineRole} />)
+          messages.map((m) => (
+            <Bubble key={m.id} message={m} mineRole={mineRole} timezone={timezone} />
+          ))
         )}
       </div>
 
@@ -313,7 +323,15 @@ function Phone({
   )
 }
 
-function Bubble({ message, mineRole }: { message: SandboxRow; mineRole: "agent" | "client" }) {
+function Bubble({
+  message,
+  mineRole,
+  timezone,
+}: {
+  message: SandboxRow
+  mineRole: "agent" | "client"
+  timezone: string
+}) {
   const mine = message.from_role === mineRole
   const isTemplate = Boolean(message.template_name)
 
@@ -364,10 +382,7 @@ function Bubble({ message, mineRole }: { message: SandboxRow; mineRole: "agent" 
             mine ? "text-neutral-500" : "text-muted-foreground",
           )}
         >
-          {new Date(message.created_at).toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          })}
+          {formatTimeOfDay(message.created_at, timezone)}
         </p>
       </div>
     </div>

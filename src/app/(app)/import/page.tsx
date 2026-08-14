@@ -2,6 +2,7 @@ import Link from "next/link"
 import { requireTenant } from "@/lib/tenant"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { ImportClient } from "./import-client"
+import { formatDate } from "@/lib/format-time"
 
 export const dynamic = "force-dynamic"
 
@@ -12,9 +13,9 @@ export default async function ImportPage() {
   const [{ data: business }, { data: history }] = await Promise.all([
     admin
       .from("businesses")
-      .select("country_code")
+      .select("country_code, timezone")
       .eq("id", tenant.businessId)
-      .maybeSingle<{ country_code: string | null }>(),
+      .maybeSingle<{ country_code: string | null; timezone: string | null }>(),
     admin
       .from("contact_imports")
       .select("id, source, file_name, status, total_rows, created_rows, updated_rows, events_created, review_rows, created_at")
@@ -27,6 +28,10 @@ export default async function ImportPage() {
     SG: "+65", MY: "+60", US: "+1", GB: "+44", AU: "+61",
   }
   const defaultCountry = dialCodes[(business?.country_code ?? "SG").toUpperCase()] ?? "+65"
+  // Server-rendered, so this is not a hydration risk — but without a timezone
+  // it would print the SERVER's date, which on Vercel is UTC and can be a day
+  // out from the operator's.
+  const timezone = business?.timezone || "Asia/Singapore"
 
   return (
     <div className="space-y-6">
@@ -67,7 +72,7 @@ export default async function ImportPage() {
                   </span>
                 )}
                 <span className="text-xs text-muted-foreground">
-                  {new Date(row.created_at as string).toLocaleDateString()}
+                  {formatDate(row.created_at as string, timezone)}
                 </span>
               </li>
             ))}

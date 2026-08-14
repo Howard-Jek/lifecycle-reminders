@@ -6,6 +6,7 @@ import { KeyRound, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { CopyButton } from "@/components/copy-button"
+import { formatDateTime } from "@/lib/format-time"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import {
   createIngestToken,
@@ -13,7 +14,14 @@ import {
   type IngestTokenView,
 } from "@/app/actions/ingest-tokens"
 
-export function TokensClient({ tokens }: { tokens: IngestTokenView[] }) {
+export function TokensClient({
+  tokens,
+  timezone,
+}: {
+  tokens: IngestTokenView[]
+  /** The BUSINESS's timezone, not the viewer's — see lib/format-time.ts. */
+  timezone: string
+}) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [name, setName] = useState("")
@@ -103,7 +111,7 @@ export function TokensClient({ tokens }: { tokens: IngestTokenView[] }) {
                 <TableCell className="font-medium">{token.name}</TableCell>
                 <TableCell className="font-mono text-xs">{token.token_prefix}…</TableCell>
                 <TableCell className="text-muted-foreground">
-                  {token.last_used_at ? new Date(token.last_used_at).toLocaleString() : "Never"}
+                  {token.last_used_at ? formatDateTime(token.last_used_at, timezone) : "Never"}
                 </TableCell>
                 <TableCell className="text-right">
                   <Button

@@ -29,7 +29,7 @@ export default async function SettingsPage() {
       <RulesClient rules={rules} />
       <WhatsappClient setup={whatsapp} />
       <ProfileClient profile={profile} />
-      <TokensClient tokens={tokens} />
+      <TokensClient tokens={tokens} timezone={profile.timezone} />
     </div>
   )
 }
