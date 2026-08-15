@@ -17,8 +17,11 @@ const COPY = {
     subtitle: "Sign in to your account",
     submit: "Sign in",
     pending: "Signing in…",
-    footer: "Don't have an account?",
-    linkLabel: "Sign up",
+    // Not "Sign up" — self-serve signup is closed and offering it sends people
+    // to a page that cannot help them. This points at the same page, but says
+    // what it actually is.
+    footer: "No account yet?",
+    linkLabel: "Access is by invitation",
     href: "/signup",
     autoComplete: "current-password",
   },

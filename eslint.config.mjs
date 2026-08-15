@@ -15,6 +15,28 @@ const eslintConfig = defineConfig([
     // Scratch written by `supabase start` — bundled third-party JS, not ours.
     "supabase/.temp/**",
   ]),
+  {
+    rules: {
+      /**
+       * Honour the `_` prefix the codebase already uses for deliberately
+       * unused arguments.
+       *
+       * Server actions have a fixed (prevState, formData) signature whether or
+       * not they read both — `signUp` now reads neither, since self-serve
+       * signup is closed and it exists only to answer callers holding an old
+       * action id. Renaming is not an option and deleting the parameters is not
+       * either, so the convention needs to be expressible.
+       */
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
+        },
+      ],
+    },
+  },
 ]);
 
 export default eslintConfig;

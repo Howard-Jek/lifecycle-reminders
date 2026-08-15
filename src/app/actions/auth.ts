@@ -24,19 +24,25 @@ export async function signIn(_prev: AuthState, formData: FormData): Promise<Auth
   redirect("/reminders")
 }
 
-export async function signUp(_prev: AuthState, formData: FormData): Promise<AuthState> {
-  const { email, password } = readCredentials(formData)
-  if (!email || !password) return { error: "Email and password are both required." }
-  if (password.length < 8) return { error: "Use at least 8 characters." }
-
-  const supabase = await createClient()
-  const { error } = await supabase.auth.signUp({ email, password })
-  if (error) return { error: error.message }
-
-  // No business is minted here. getTenant() does it on first authenticated
-  // request, so signup, an invited user, and any pre-membership straggler all
-  // funnel through one code path.
-  redirect("/reminders")
+/**
+ * Self-serve signup is closed; operators are invited.
+ *
+ * Kept as a stub rather than deleted because a server action is addressable by
+ * its compiled id, and those ids live in already-shipped client bundles. A
+ * deleted action leaves the id resolving to nothing and the caller gets an
+ * opaque framework error; this returns something a human can act on.
+ *
+ * THIS IS NOT THE CONTROL, and the distinction matters. The anon key is public
+ * by design, so `POST /auth/v1/signup` at Supabase is reachable from anywhere
+ * without touching this file at all. `disable_signup: true` on the project is
+ * what actually closes it — see docs/ENROLMENT.md. This only makes the app
+ * honest about a door that is shut elsewhere.
+ */
+export async function signUp(_prev: AuthState, _formData: FormData): Promise<AuthState> {
+  return {
+    error:
+      "Accounts are set up by invitation. Get in touch and we will send you a sign-in link.",
+  }
 }
 
 export async function signOut() {

@@ -53,17 +53,41 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Call the reminder cycle
+      # "Not configured" is a setup state, not a failure — the same distinction
+      # the engine itself now makes about a missing WhatsApp sender. Failing
+      # here emailed a red run every 15 minutes for a repository secret nobody
+      # had added yet, which trains people to ignore the one notification that
+      # will matter later. The run goes green and says plainly that it did
+      # nothing; every state AFTER configuration still fails loudly.
+      - name: Check configuration
+        id: config
         env:
           APP_URL: ${{ secrets.APP_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
           set -euo pipefail
-
           if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
-            echo "::error::APP_URL and CRON_SECRET must both be set as repository secrets."
-            exit 1
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Not configured — set the APP_URL and CRON_SECRET repository secrets to enable the reminder tick. Skipping."
+            {
+              echo "### Reminder tick skipped"
+              echo
+              echo "The \`APP_URL\` and \`CRON_SECRET\` repository secrets are not set, so there is"
+              echo "nothing to call. Reminders are NOT being delivered on the 15-minute schedule."
+              echo
+              echo "Settings → Secrets and variables → Actions, then re-run this workflow."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Call the reminder cycle
+        if: steps.config.outputs.configured == 'true'
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
 
           # --max-time is below the job timeout so a hung request fails as a
           # request rather than as a cancelled job, which reports far better.
@@ -98,7 +122,7 @@ jobs:
           fi
 
       - name: Summarise
-        if: always()
+        if: always() && steps.config.outputs.configured == 'true'
         run: |
           if [ -f response.json ]; then
             python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
