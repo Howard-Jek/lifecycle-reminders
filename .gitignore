@@ -26,3 +26,6 @@ supabase/bundle.sql
 # that bites the next person rather than this one.
 .env*
 !.env.example
+
+# Written by the CI dependency-scan step; never committed.
+audit.json

@@ -4,6 +4,8 @@ import { isDryRun } from "@/lib/env"
 import { listSandboxMessages } from "@/app/actions/sandbox"
 import { SandboxClient } from "./sandbox-client"
 
+export const metadata = { title: "Sandbox" }
+
 export const dynamic = "force-dynamic"
 
 export default async function SandboxPage() {

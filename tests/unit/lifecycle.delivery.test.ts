@@ -226,6 +226,30 @@ describe("escapeIcsText", () => {
       "Tan\\, Jane\\; note\\\\here\\nline2",
     )
   })
+
+  it("escapes a LONE carriage return, not just CRLF and LF", () => {
+    // A bare \r is still a line terminator in an ICS feed, and it used to pass
+    // straight through: the regex was /\r?\n/, which only matches when a \n
+    // follows. A contact name or event label carrying one could therefore end a
+    // property early and inject its own — a whole VEVENT, in the worst case —
+    // into every calendar subscribed to that member's feed.
+    expect(escapeIcsText("Tan\rDROPPED")).toBe("Tan\\nDROPPED")
+    expect(escapeIcsText("a\r\nb")).toBe("a\\nb")
+    expect(escapeIcsText("a\nb")).toBe("a\\nb")
+    // The point of the fix: no raw terminator survives, in any of the three forms.
+    for (const raw of ["x\ry", "x\r\ny", "x\ny"]) {
+      const escaped = escapeIcsText(raw)
+      expect(escaped).not.toMatch(/[\r\n]/)
+    }
+  })
+
+  it("cannot be used to inject an ICS property", () => {
+    const hostile = "Jane\rSUMMARY:injected\rDESCRIPTION:also injected"
+    const escaped = escapeIcsText(hostile)
+    expect(escaped).not.toMatch(/[\r\n]/)
+    // The text survives as literal content rather than becoming structure.
+    expect(escaped).toContain("SUMMARY:injected")
+  })
 })
 
 describe("foldIcsLine", () => {

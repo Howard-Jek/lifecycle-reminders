@@ -7,6 +7,8 @@ import { Badge } from "@/components/ui/badge"
 import { ContactSearch } from "./search"
 import { Users } from "lucide-react"
 
+export const metadata = { title: "Contacts" }
+
 export const dynamic = "force-dynamic"
 
 const PAGE_SIZE = 50
@@ -24,7 +26,11 @@ export default async function ContactsPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>
 }) {
   const params = await searchParams
-  const q = typeof params.q === "string" ? params.q.trim() : ""
+  // Bounded before it reaches the query. The filter below interpolates `q` into
+  // a PostgREST `or()` expression, so length is not cosmetic: an unbounded
+  // string becomes an unbounded expression, and 18,000 characters of it was
+  // enough to make the database return an error the page then rendered.
+  const q = typeof params.q === "string" ? params.q.trim().slice(0, 100) : ""
   const page = Math.max(0, Number(typeof params.page === "string" ? params.page : 0) || 0)
 
   const tenant = await requireTenant()
@@ -38,9 +44,18 @@ export default async function ContactsPage({
     .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1)
 
   if (q) {
-    // Escape the PostgREST or() separators so a comma or paren in the search
-    // box cannot restructure the filter.
-    const safe = q.replace(/[(),*]/g, " ").trim()
+    // Two separate jobs, and they were being confused for one.
+    //
+    // First: neutralise the PostgREST or() separators, so a comma or paren in
+    // the search box cannot restructure the filter.
+    //
+    // Second: escape the LIKE metacharacters. `%` and `_` are wildcards inside
+    // ilike, so searching for "50%" used to match every contact rather than
+    // none — not a security hole, but a search box that silently lies.
+    const safe = q
+      .replace(/[(),*]/g, " ")
+      .replace(/[%_\\]/g, (m) => "\\" + m)
+      .trim()
     if (safe) query = query.or(`name.ilike.%${safe}%,phone.ilike.%${safe}%,email.ilike.%${safe}%`)
   }
 
@@ -53,6 +68,9 @@ export default async function ContactsPage({
     admin.from("team_members").select("id, display_name").eq("business_id", tenant.businessId),
   ])
   const rows = data ?? []
+  // Logged here so the detail survives for whoever debugs it; the page below
+  // renders a fixed string instead.
+  if (error) console.error(`[contacts] query failed: ${error.message}`)
   const members = new Map(
     (memberRes.data ?? []).map((m) => [m.id as string, m.display_name as string]),
   )
@@ -91,8 +109,12 @@ export default async function ContactsPage({
         </div>
 
         {error ? (
+          // The raw driver message is logged, not rendered. It carries column
+          // names, SQLSTATE codes and fragments of the generated query — free
+          // schema disclosure to anyone who can make the query fail, which
+          // until the clamp above took a single long search term.
           <p className="m-5 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {error.message}
+            Could not load contacts. Try a simpler search, or reload the page.
           </p>
         ) : rows.length === 0 ? (
           <div className="flex flex-col items-center gap-2 px-6 py-16 text-center">

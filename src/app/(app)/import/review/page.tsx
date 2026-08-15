@@ -3,6 +3,8 @@ import { requireTenant } from "@/lib/tenant"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { ReviewClient, type ReviewRow } from "./review-client"
 
+export const metadata = { title: "Review queue" }
+
 export const dynamic = "force-dynamic"
 
 /**

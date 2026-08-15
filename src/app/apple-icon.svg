@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180">
+  <!-- Apple touch icons are composited on the home screen without transparency,
+       so this one is deliberately opaque and padded rather than edge-to-edge. -->
+  <rect width="180" height="180" rx="40" fill="#1a1a20"/>
+  <rect x="42" y="53" width="96" height="86" rx="12" fill="none" stroke="#f2efe9" stroke-width="10"/>
+  <path d="M42 80h96" stroke="#f2efe9" stroke-width="10"/>
+  <path d="M69 41v22M111 41v22" stroke="#f2efe9" stroke-width="10" stroke-linecap="round"/>
+  <rect x="97" y="97" width="27" height="27" rx="6" fill="#d96d3a"/>
+</svg>

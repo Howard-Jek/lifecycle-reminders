@@ -1,6 +1,8 @@
 import { listTeamMembers, listCalendarFeedStatus } from "@/app/actions/team-members"
 import { TeamClient } from "./team-client"
 
+export const metadata = { title: "Team" }
+
 export const dynamic = "force-dynamic"
 
 export default async function TeamPage() {

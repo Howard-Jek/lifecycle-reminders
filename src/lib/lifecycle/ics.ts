@@ -34,7 +34,12 @@ export function escapeIcsText(value: string): string {
     .replace(/\\/g, "\\\\")
     .replace(/;/g, "\\;")
     .replace(/,/g, "\\,")
-    .replace(/\r?\n/g, "\\n")
+    // Every line break, not just CRLF and LF. A LONE \r used to pass straight
+    // through into the feed, where it is still a line terminator — so a client
+    // name or event label containing one could inject an arbitrary ICS property
+    // (or a whole VEVENT) into a subscriber's calendar. All three forms
+    // collapse to the escaped \n that RFC 5545 expects.
+    .replace(/\r\n|\r|\n/g, "\\n")
 }
 
 /**

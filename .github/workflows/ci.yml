@@ -1,0 +1,98 @@
+# Typecheck, lint, test, build, and scan dependencies on every push and PR.
+#
+# The dependency scan is the reason this exists. `npm audit` run by hand is a
+# scan nobody sees; run here it fails a pull request. It is pinned at
+# --audit-level=high deliberately: moderates in this tree are unreachable dev
+# dependencies, and a check that cries wolf is one people learn to click past.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # So the dependency scan still finds newly-published advisories in a week
+  # where nobody pushes anything.
+  schedule:
+    - cron: "0 2 * * 1"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        # The build needs these to exist, not to be correct — pages are all
+        # dynamic, so nothing is prerendered against a real database.
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder
+          SUPABASE_SERVICE_ROLE_KEY: placeholder
+          APP_PUBLIC_URL: https://placeholder.example
+          CRON_SECRET: placeholder
+        run: npm run build
+
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Dependency scan
+        # `|| true` then an explicit report, so the log shows WHAT was found
+        # rather than just a non-zero exit. The gate is the step after it.
+        run: |
+          npm audit --audit-level=high --json > audit.json || true
+          python3 - <<'PY'
+          import json
+          d = json.load(open("audit.json"))
+          vulns = d.get("vulnerabilities", {})
+          bad = {k: v for k, v in vulns.items() if v.get("severity") in ("high", "critical")}
+          meta = d.get("metadata", {}).get("vulnerabilities", {})
+          print(f"totals: {meta}")
+          for name, v in bad.items():
+              via = v.get("via", [])
+              title = next((x.get("title") for x in via if isinstance(x, dict)), "")
+              print(f"  {v['severity'].upper():<8} {name:<28} {title[:80]}")
+              print(f"           paths: {', '.join(v.get('nodes', [])[:3])}")
+          # KNOWN AND ACCEPTED, reviewed 2026-08-14:
+          #   undici — transitive under @ai-sdk/provider-utils, which @ai-sdk/*
+          #   pins. Not fixable without a major bump of the AI SDK. The app makes
+          #   one outbound call, to Anthropic over HTTPS with a small JSON body,
+          #   so the decompression and smuggling vectors need a hostile upstream.
+          #   Revisit when @ai-sdk/anthropic moves off provider-utils@4.
+          ACCEPTED = {"undici"}
+          unexpected = sorted(set(bad) - ACCEPTED)
+          if unexpected:
+              print(f"\n::error::New high/critical advisories: {', '.join(unexpected)}")
+              raise SystemExit(1)
+          print("\nNo unaccepted high or critical advisories.")
+          PY

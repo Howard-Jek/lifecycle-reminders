@@ -7,6 +7,8 @@ import { TokensClient } from "./tokens-client"
 import { WhatsappClient } from "./whatsapp-client"
 import { ProfileClient } from "./profile-client"
 
+export const metadata = { title: "Settings" }
+
 export const dynamic = "force-dynamic"
 
 export default async function SettingsPage() {

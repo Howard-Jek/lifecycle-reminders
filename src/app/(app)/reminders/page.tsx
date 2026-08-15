@@ -16,6 +16,8 @@ import { WelcomeTour } from "@/components/onboarding/welcome-tour"
 import { getCoverage } from "@/app/actions/coverage"
 import { CalendarClock, Inbox } from "lucide-react"
 
+export const metadata = { title: "Reminders" }
+
 export const dynamic = "force-dynamic"
 
 /**
