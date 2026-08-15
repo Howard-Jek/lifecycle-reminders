@@ -45,6 +45,7 @@ import {
 import { recordSandboxMessage, renderReminderBody } from "@/lib/sandbox/record"
 import { NO_GUARDRAILS } from "@/lib/guardrails"
 import { appPublicUrl } from "@/lib/env"
+import { getGomaSender } from "@/lib/notify/goma-sender"
 import type { ContactEvent, ReminderRule, TeamMember, PlannedReminder } from "./types"
 
 /**
@@ -291,6 +292,31 @@ type DueRow = {
 }
 
 async function deliverDue(admin: SupabaseClient) {
+  // Nothing can be delivered without a sender, so do not TOUCH the queue.
+  //
+  // The old behaviour resolved each due reminder to a terminal `skipped` on the
+  // reasoning that "not configured" is permanent for this deployment. That is
+  // true of a single run and false of the thing that actually happens: the
+  // credentials are missing because nobody has set them YET — it is step 4 of
+  // the setup checklist — and marking the queue terminal destroys real work to
+  // record a fact the deployment already knows about itself.
+  //
+  // It got worse the moment the cycle ran more often than daily. At one run a
+  // day this cost one day's reminders; at four runs an hour it burns the entire
+  // backlog in an afternoon and leaves nothing to deliver once the credentials
+  // finally arrive.
+  //
+  // Leaving them queued means the backlog simply flows when the sender appears.
+  // Dry run is deliberately NOT excluded here: getGomaSender() stands in for
+  // the credentials, so a dry run still exercises the whole delivery path.
+  if (!getGomaSender()) {
+    console.warn(
+      "[lifecycle] no WhatsApp sender configured — leaving the queue untouched. " +
+        "Set GOMA_NOTIFY_PHONE_NUMBER_ID and GOMA_NOTIFY_ACCESS_TOKEN, or REMINDER_DRY_RUN outside production.",
+    )
+    return { sent: 0, failed: 0, skipped: 0, senderUnconfigured: true }
+  }
+
   const nowIso = new Date().toISOString()
 
   const { data, error } = await admin

@@ -1,0 +1,118 @@
+# Drives the reminder cycle every 15 minutes.
+#
+# WHY THIS EXISTS
+#
+# The engine resolves each rule's send window to a wall-clock instant in the
+# business's own timezone: morning 09:00, afternoon 13:00, evening 19:00. A
+# reminder becomes deliverable at that instant and not before.
+#
+# Vercel's Hobby plan allows ONE cron invocation per day. A single daily run can
+# therefore only ever serve the one window it happens to land on. With the cron
+# at 01:00 UTC (= 09:00 Asia/Singapore) the morning window was served exactly on
+# time and every other window was served on the FOLLOWING day's run — afternoon
+# ~20 hours late, evening ~14 hours late. Measured on live data: 935 reminders
+# due at 01:00 UTC went out on time, 65 due at 05:00 UTC did not. One of the five
+# seeded default rules (policy_review, afternoon) sat in that broken window out
+# of the box.
+#
+# GitHub Actions schedules for free, so the fix costs nothing. The route it calls
+# is the same one Vercel Cron calls and the same function `scripts/tick.ts` runs
+# locally — swapping the driver changes no behaviour.
+#
+# THE VERCEL CRON STAYS. It is a daily backstop: GitHub disables scheduled
+# workflows in repositories with no activity for 60 days, and a reminder engine
+# that quietly stops is the failure this whole product is about. If this workflow
+# dies, the daily run still catches the morning window rather than nothing.
+#
+# SETUP — two repository secrets, Settings → Secrets and variables → Actions:
+#   CRON_SECRET   the same value as the Vercel environment variable
+#   APP_URL       https://lifecycle-app-tau.vercel.app   (no trailing slash)
+
+name: Reminder tick
+
+on:
+  schedule:
+    # Every 15 minutes. GitHub treats this as best-effort and delays it under
+    # load, which is fine here: a window only needs to be noticed within the
+    # hour, not to the second. It is NOT fine to widen this past ~30 minutes,
+    # because the delivery loop caps at 40 reminders per run.
+    - cron: "*/15 * * * *"
+  # So a run can be forced from the Actions tab without waiting for the schedule
+  # — useful when clearing a backlog or after fixing credentials.
+  workflow_dispatch:
+
+# A cycle claims rows before sending, so two overlapping runs are safe rather
+# than duplicating work. They would still contend, so the newer one waits.
+concurrency:
+  group: reminder-tick
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Call the reminder cycle
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::APP_URL and CRON_SECRET must both be set as repository secrets."
+            exit 1
+          fi
+
+          # --max-time is below the job timeout so a hung request fails as a
+          # request rather than as a cancelled job, which reports far better.
+          status=$(curl -sS -o response.json -w '%{http_code}' \
+            --max-time 330 \
+            -X POST \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL}/api/cron/process-reminders")
+
+          echo "HTTP ${status}"
+          cat response.json
+          echo
+
+          if [ "${status}" != "200" ]; then
+            # Named so the failure is readable from the Actions list without
+            # opening the run. 401 means the secret drifted from Vercel's; 503
+            # means CRON_SECRET is unset on the deployment itself.
+            case "${status}" in
+              401) echo "::error::Rejected. CRON_SECRET here does not match the one on Vercel." ;;
+              503) echo "::error::The deployment has no CRON_SECRET set, so it refused to run." ;;
+              *)   echo "::error::Reminder cycle returned HTTP ${status}." ;;
+            esac
+            exit 1
+          fi
+
+          # A 200 with ok:false means the cycle itself threw. Without this the
+          # job would go green on a broken run, which is the failure mode a
+          # scheduler is least able to afford.
+          if ! grep -q '"ok":true' response.json; then
+            echo "::error::Cycle reported a failure — see the body above."
+            exit 1
+          fi
+
+      - name: Summarise
+        if: always()
+        run: |
+          if [ -f response.json ]; then
+            python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          try:
+              d = json.load(open("response.json"))
+          except Exception:
+              print("Cycle returned a body that was not JSON."); raise SystemExit
+          if not d.get("ok"):
+              print(f"**Cycle failed** — `{d.get('error', 'no error reported')}`"); raise SystemExit
+          print("| metric | count |")
+          print("|---|---|")
+          for k in ("requeued", "planned", "inserted", "sent", "failed", "skipped"):
+              if k in d:
+                  print(f"| {k} | {d[k]} |")
+          PY
+          fi
