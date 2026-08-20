@@ -9,6 +9,7 @@ import { REMINDER_STATUS_PILL } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { EventsClient } from "./events-client"
+import { listKnownEventTypes } from "@/lib/lifecycle/event-types"
 
 export const dynamic = "force-dynamic"
 
@@ -33,8 +34,13 @@ export default async function ContactPage({ params }: { params: Promise<{ id: st
 
   if (!contact) notFound()
 
-  const [{ data: business }, { data: eventRows }, { data: memberRows }, { data: reminderRows }] =
-    await Promise.all([
+  const [
+    { data: business },
+    { data: eventRows },
+    { data: memberRows },
+    { data: reminderRows },
+    knownTypes,
+  ] = await Promise.all([
       admin
         .from("businesses")
         .select("timezone")
@@ -57,6 +63,9 @@ export default async function ContactPage({ params }: { params: Promise<{ id: st
         .eq("business_id", tenant.businessId)
         .order("due_at", { ascending: true })
         .limit(200),
+      // Rides in the same wave — the type picker needs it on first paint, and a
+      // Supabase round-trip costs the same whether or not it is alone.
+      listKnownEventTypes(admin, tenant.businessId),
     ])
 
   const timezone = business?.timezone || "Asia/Singapore"
@@ -77,7 +86,14 @@ export default async function ContactPage({ params }: { params: Promise<{ id: st
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-1">
-        <Link href="/contacts" className="text-sm text-muted-foreground hover:underline">
+        {/* Sized rather than left as bare text: as an inline link it rendered
+            20px tall, under the 24px minimum, and it is the only way back on a
+            phone. `self-start` so the hit area is the words, not the full
+            width of the column. */}
+        <Link
+          href="/contacts"
+          className="-ml-2 inline-flex h-8 w-fit items-center self-start rounded-lg px-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        >
           ← Contacts
         </Link>
         <h1 className="text-2xl font-bold tracking-tight">{contact.name}</h1>
@@ -101,6 +117,7 @@ export default async function ContactPage({ params }: { params: Promise<{ id: st
       </div>
 
       <EventsClient
+        knownTypes={knownTypes}
         contactId={contact.id}
         assignedMemberId={contact.assigned_member_id}
         members={members}

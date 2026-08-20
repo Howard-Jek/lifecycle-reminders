@@ -56,3 +56,29 @@ export function formatDateTime(iso: string, timezone: string): string {
     timezone,
   )
 }
+
+/**
+ * "2026-09-11" → "11 Sep 2026".
+ *
+ * Separate from formatDate() because a `date` column is not an instant. Feeding
+ * "2026-09-11" to `new Date()` parses it as UTC MIDNIGHT, so formatting it in
+ * any timezone west of Greenwich renders the 10th — a policy that expires a day
+ * early, in the product whose entire job is being right about dates.
+ *
+ * So this does no timezone maths at all. A calendar date has no timezone; it is
+ * the same day whoever is reading it, and the only work here is making it read
+ * like a date rather than like a database column.
+ */
+const MONTHS = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+]
+
+export function formatYmd(ymd: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd)
+  if (!match) return ymd
+  const [, year, month, day] = match
+  const name = MONTHS[Number(month) - 1]
+  if (!name) return ymd
+  return `${Number(day)} ${name} ${year}`
+}

@@ -5,7 +5,8 @@ import { cn } from "@/lib/utils"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { ContactSearch } from "./search"
-import { Users } from "lucide-react"
+import { Users, Cake, ChevronRight } from "lucide-react"
+import { isPolicyLike } from "@/lib/lifecycle/event-types"
 
 export const metadata = { title: "Contacts" }
 
@@ -75,12 +76,16 @@ export default async function ContactsPage({
     (memberRes.data ?? []).map((m) => [m.id as string, m.display_name as string]),
   )
 
-  // Event counts for the rows on screen only.
-  const counts = new Map<string, number>()
+  // Event counts for the rows on screen only, split into the two things an
+  // operator actually asks about: how many products this client holds, and
+  // whether we know their birthday. A single "dates" number conflated them and
+  // answered neither.
+  const policies = new Map<string, number>()
+  const personal = new Map<string, number>()
   if (rows.length > 0) {
     const { data: events } = await admin
       .from("contact_events")
-      .select("lead_id")
+      .select("lead_id, event_type")
       .eq("business_id", tenant.businessId)
       .in(
         "lead_id",
@@ -88,7 +93,8 @@ export default async function ContactsPage({
       )
     for (const e of events ?? []) {
       const id = e.lead_id as string
-      counts.set(id, (counts.get(id) ?? 0) + 1)
+      const bucket = isPolicyLike(e.event_type as string) ? policies : personal
+      bucket.set(id, (bucket.get(id) ?? 0) + 1)
     }
   }
 
@@ -99,7 +105,8 @@ export default async function ContactsPage({
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Contacts</h1>
         <p className="text-sm text-muted-foreground">
-          {count ?? 0} {count === 1 ? "contact" : "contacts"}, and the dates worth watching.
+          {count ?? 0} {count === 1 ? "contact" : "contacts"}, counted by the policy dates on file.
+          A cake means we also know their birthday.
         </p>
       </div>
 
@@ -139,33 +146,49 @@ export default async function ContactsPage({
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-[30%] pl-5">Name</TableHead>
-                  <TableHead className="w-[22%]">Phone</TableHead>
-                  <TableHead className="w-[24%]">Agent</TableHead>
-                  <TableHead className="w-[24%] pr-5 text-right">Dates</TableHead>
+                  {/* Phone and Agent fold below sm, matching the rules and
+                      team tables. Left as four columns, the row was 496px wide
+                      inside a 341px viewport and the Policies count — the
+                      whole point of this screen for a manager — sat 77px past
+                      the right edge with no scrollbar, no fade, nothing to say
+                      it was there. */}
+                  <TableHead className="pl-5 sm:w-[30%]">Name</TableHead>
+                  <TableHead className="hidden sm:table-cell sm:w-[22%]">Phone</TableHead>
+                  <TableHead className="hidden sm:table-cell sm:w-[24%]">Agent</TableHead>
+                  <TableHead className="w-[7.5rem] pr-5 text-right">Policy dates</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {rows.map((row) => (
                   <TableRow key={row.id as string}>
-                    <TableCell className="pl-5 font-medium">
-                      {/* Same treatment as the reminder list's link to this
-                          exact destination. A column of brand colour is a lot,
-                          and toning it down here was tempting — but the host's
-                          link colour is the host's to change, and forking it in
-                          one table buys a calmer page at the cost of the app
-                          disagreeing with itself about what a link looks like. */}
+                    {/* whitespace-normal overrides TableCell's nowrap default.
+                        Folding the other columns was not enough on its own: a
+                        realistic Singaporean name ran the row 139px past a
+                        375px viewport all by itself, because a nowrap cell just
+                        keeps growing. This is the column that must give. */}
+                    <TableCell className="max-w-0 pl-5 font-medium whitespace-normal">
+                      {/* Underlined at rest, not only on hover. Orange text
+                          alone reads as styling — an operator told us they did
+                          not know the name was clickable, which for the one
+                          control on the row is the whole navigation. */}
                       <Link
                         href={`/contacts/${row.id}`}
-                        className="rounded-sm text-brand-ink hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                        className="group inline-flex items-center gap-1 rounded-sm text-brand-ink underline decoration-brand/40 underline-offset-4 transition-colors hover:decoration-brand focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
                       >
                         {row.name as string}
+                        <ChevronRight
+                          className="size-3.5 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+                          aria-hidden
+                        />
                       </Link>
+                      <span className="mt-0.5 block font-mono text-xs font-normal tabular-nums text-muted-foreground sm:hidden">
+                        {row.phone as string}
+                      </span>
                     </TableCell>
-                    <TableCell className="font-mono text-xs tabular-nums">
+                    <TableCell className="hidden font-mono text-xs tabular-nums sm:table-cell">
                       {row.phone as string}
                     </TableCell>
-                    <TableCell className="text-muted-foreground">
+                    <TableCell className="hidden text-muted-foreground sm:table-cell">
                       {row.assigned_member_id ? (
                         members.get(row.assigned_member_id as string) ?? "Removed"
                       ) : (
@@ -174,8 +197,32 @@ export default async function ContactsPage({
                         </Badge>
                       )}
                     </TableCell>
-                    <TableCell className="pr-5 text-right tabular-nums">
-                      {counts.get(row.id as string) ?? 0}
+                    <TableCell className="pr-5 text-right">
+                      {/* Two fixed slots, not a flex row that reflows.
+                          Sharing one right-aligned box put the digit 22px
+                          further left on any row that had a cake, so a column
+                          of tabular-nums zig-zagged down the page — the exact
+                          thing tabular-nums is for. */}
+                      <span className="inline-flex items-center justify-end gap-1.5">
+                        <span className="w-4 text-right tabular-nums">
+                          {policies.get(row.id as string) ?? 0}
+                        </span>
+                        {/* The birthday is not a policy, but losing it from the
+                            row entirely would hide whether we hold one at all —
+                            which is the difference between a birthday rule that
+                            fires and one that silently never does. */}
+                        <span className="inline-flex w-3.5 justify-center">
+                          {(personal.get(row.id as string) ?? 0) > 0 && (
+                            <Cake
+                              className="size-3.5 shrink-0 text-muted-foreground"
+                              strokeWidth={1.75}
+                              aria-label="Birthday on file"
+                            >
+                              <title>Birthday on file</title>
+                            </Cake>
+                          )}
+                        </span>
+                      </span>
                     </TableCell>
                   </TableRow>
                 ))}

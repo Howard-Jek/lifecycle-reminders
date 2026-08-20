@@ -15,6 +15,7 @@ import { getSetupSteps } from "@/app/actions/onboarding"
 import { WelcomeTour } from "@/components/onboarding/welcome-tour"
 import { getCoverage } from "@/app/actions/coverage"
 import { CalendarClock, Inbox } from "lucide-react"
+import { listKnownEventTypes, isPolicyLike } from "@/lib/lifecycle/event-types"
 
 export const metadata = { title: "Reminders" }
 
@@ -39,6 +40,14 @@ const TABS = [
 
 type TabId = (typeof TABS)[number]["id"]
 
+const VIEWS = [
+  { id: "all", label: "All" },
+  { id: "policies", label: "Renewals" },
+  { id: "personal", label: "Birthdays" },
+] as const
+
+type ViewId = (typeof VIEWS)[number]["id"]
+
 type ReminderRow = {
   id: string
   occurrence_date: string
@@ -62,6 +71,9 @@ export default async function RemindersPage({
   const raw = typeof params.tab === "string" ? params.tab : "due"
   const tab: TabId = (TABS.find((t) => t.id === raw)?.id ?? "due") as TabId
   const mine = params.mine === "1"
+  // Which kind of date. Validated below against the buckets this business
+  // actually has, so it can never select a view that is empty by construction.
+  const viewParam = typeof params.view === "string" ? params.view : "all"
 
   const tenant = await requireTenant()
   const admin = createAdminClient()
@@ -77,20 +89,64 @@ export default async function RemindersPage({
   // Coverage is loaded here rather than in the shell: an empty queue and a
   // queue that can never fill look identical, and this is the page where that
   // matters.
-  const [coverage, businessRes, memberRes, setupSteps, cookieStore] = await Promise.all([
-    getCoverage(),
-    admin
-      .from("businesses")
-      .select("timezone")
-      .eq("id", tenant.businessId)
-      .maybeSingle<{ timezone: string | null }>(),
-    admin
-      .from("team_members")
-      .select("id, display_name, auth_user_id")
-      .eq("business_id", tenant.businessId),
-    getSetupSteps(),
-    cookies(),
-  ])
+  const [coverage, businessRes, memberRes, setupSteps, cookieStore, knownTypes] =
+    await Promise.all([
+      getCoverage(),
+      admin
+        .from("businesses")
+        .select("timezone")
+        .eq("id", tenant.businessId)
+        .maybeSingle<{ timezone: string | null }>(),
+      admin
+        .from("team_members")
+        .select("id, display_name, auth_user_id")
+        .eq("business_id", tenant.businessId),
+      getSetupSteps(),
+      cookies(),
+      listKnownEventTypes(admin, tenant.businessId),
+    ])
+
+  /**
+   * Renewals and birthdays are the same row in the same table, and a manager
+   * doing a renewals pass has to read past the birthdays to find them.
+   *
+   * Split by BUCKET rather than by exact event_type: an agency runs several
+   * policy types, so a filter that picked one of them would still make
+   * "everything expiring" a five-click job. The buckets come from this tenant's
+   * own types via isPolicyLike, so the engine keeps knowing nothing about
+   * insurance beyond the single exception that file already documents.
+   */
+  const buckets = {
+    policies: knownTypes.filter((t) => isPolicyLike(t.value)).map((t) => t.value),
+    personal: knownTypes.filter((t) => !isPolicyLike(t.value)).map((t) => t.value),
+  }
+  // An empty bucket is never offered and therefore can never be selected. That
+  // is what keeps the .in() below from being handed an empty list, and stops a
+  // hand-edited URL rendering a blank inbox that reads as "nothing is due".
+  const view: ViewId =
+    (viewParam === "policies" || viewParam === "personal") && buckets[viewParam].length > 0
+      ? viewParam
+      : "all"
+  const viewTypes = view === "all" ? [] : buckets[view]
+  // Named for what is actually in it. PERSONAL_EVENT_TYPES covers anniversaries
+  // too, and a bucket labelled "Birthdays" while quietly also hiding
+  // anniversaries is the kind of small lie a filter should not tell.
+  const personalLabel = buckets.personal.every((t) => t === "birthday") ? "Birthdays" : "Personal"
+  // The same courtesy on the policy side, which was not being extended.
+  // isPolicyLike is a NEGATION — "not a birthday or anniversary" — so this
+  // bucket holds every product date, and a business tracking policy_review
+  // alongside policy_expiry was being told those reviews were "Renewals". A
+  // review is not a renewal. Only claim the narrower word when it is true.
+  const RENEWAL_WORDS = /(expiry|expiration|renewal|renew)/
+  const policiesLabel = buckets.policies.every((t) => RENEWAL_WORDS.test(t))
+    ? "Renewals"
+    : "Policies"
+  const viewLabel =
+    view === "personal"
+      ? personalLabel
+      : view === "policies"
+        ? policiesLabel
+        : (VIEWS.find((v) => v.id === view)?.label ?? "All")
 
   const timezone = businessRes.data?.timezone || "Asia/Singapore"
   const today = todayInTimezone(new Date(), timezone)
@@ -103,12 +159,60 @@ export default async function RemindersPage({
   // auth_user_id simply never matches, which is correct — they do not log in.
   const myMemberId =
     (memberRows ?? []).find((m) => m.auth_user_id === tenant.userId)?.id as string | undefined
+  /**
+   * `mine` only means anything when the signed-in user IS a team member.
+   *
+   * The toggle is hidden without one, but the query param survived in every
+   * generated link regardless — so a URL shared from an account that has a
+   * member seat carried `mine=1` into one that does not, where it narrowed
+   * nothing while the URL claimed it did. Resolved once, here, rather than
+   * re-deriving `mine && myMemberId` at each of the four use sites.
+   */
+  const mineActive = mine && Boolean(myMemberId)
+
+  /**
+   * `reminders` has no event_type — it lives on contact_events, one FK away.
+   *
+   * `!inner` turns the embed into a JOIN rather than a left-join, so a filter
+   * on the embedded column filters the PARENT rows. The alternative was
+   * resolving matching event ids in a first query and passing those to .in(),
+   * which costs a round trip AND breaks silently past PostgREST's 1000-row cap:
+   * a book with more than a thousand policy expiries would quietly show a
+   * subset and look like the filter was simply finding less. Filtering on the
+   * type STRINGS has no such ceiling — there are a handful of them, not one
+   * per date.
+   *
+   * The embed is only added when filtering, so the unfiltered inbox pays
+   * nothing for a feature it is not using.
+   */
+  const LIST_COLUMNS =
+    "id, occurrence_date, due_at, status, suggestion, error, sent_at, member_id, event_id"
+  const withType = (columns: string) =>
+    viewTypes.length > 0 ? `${columns}, contact_events!inner(event_type)` : columns
 
   let query = admin
     .from("reminders")
-    .select("id, occurrence_date, due_at, status, suggestion, error, sent_at, member_id, event_id")
+    .select(withType(LIST_COLUMNS))
     .eq("business_id", tenant.businessId)
     .limit(PAGE_SIZE)
+  if (viewTypes.length > 0) query = query.in("contact_events.event_type", viewTypes)
+
+  /**
+   * Every link on this page keeps the scope you are already in.
+   *
+   * There are three independent dimensions now — status tab, whose reminders,
+   * which kind of date — and each link was concatenating them by hand. That is
+   * how a filter silently resets: switching tabs already dropped nothing only
+   * because `mine` was spelled out at every call site, and a third dimension
+   * would have had to be spelled out at all of them again.
+   */
+  const hrefFor = (next: { tab?: TabId; mine?: boolean; view?: ViewId }) => {
+    const q = new URLSearchParams({ tab: next.tab ?? tab })
+    if (next.mine ?? mineActive) q.set("mine", "1")
+    const v = next.view ?? view
+    if (v !== "all") q.set("view", v)
+    return `/reminders?${q}`
+  }
 
   const nowIso = new Date().toISOString()
   if (tab === "due") {
@@ -121,20 +225,21 @@ export default async function RemindersPage({
     query = query.in("status", ["failed", "skipped"]).order("due_at", { ascending: false })
   }
 
-  if (mine && myMemberId) query = query.eq("member_id", myMemberId)
+  if (mineActive) query = query.eq("member_id", myMemberId)
 
   // How many are behind each tab, so "Needs attention" can say so without
   // being opened. `head: true` — these are counts, no rows cross the wire.
   const countFor = (id: TabId) => {
     let q = admin
       .from("reminders")
-      .select("id", { count: "exact", head: true })
+      .select(withType("id"), { count: "exact", head: true })
       .eq("business_id", tenant.businessId)
+    if (viewTypes.length > 0) q = q.in("contact_events.event_type", viewTypes)
     if (id === "due") q = q.eq("status", "queued").lte("due_at", nowIso)
     else if (id === "upcoming") q = q.eq("status", "queued").gt("due_at", nowIso)
     else if (id === "sent") q = q.eq("status", "sent")
     else q = q.in("status", ["failed", "skipped"])
-    if (mine && myMemberId) q = q.eq("member_id", myMemberId)
+    if (mineActive) q = q.eq("member_id", myMemberId)
     return q
   }
 
@@ -142,7 +247,11 @@ export default async function RemindersPage({
     query,
     ...TABS.map((t) => countFor(t.id)),
   ])
-  const rows = (data ?? []) as ReminderRow[]
+  // Through `unknown` because the column list is built at runtime now, so
+  // supabase-js can no longer parse it into a row type and falls back to its
+  // error shape. The columns are still fixed — LIST_COLUMNS above — the
+  // compiler just cannot see through the template string to check it.
+  const rows = (data ?? []) as unknown as ReminderRow[]
   const tabCounts = new Map<TabId, number>(
     // A failed count is `null`, which must not render as a confident "0".
     TABS.map((t, i) => [t.id, tabCountResults[i]?.count ?? -1]),
@@ -197,19 +306,21 @@ export default async function RemindersPage({
             Client dates worth a conversation, and who they are going to.
           </p>
         </div>
-        {myMemberId && (
-          <Link
-            href={`/reminders?tab=${tab}${mine ? "" : "&mine=1"}`}
-            className={cn(
-              "inline-flex h-8 shrink-0 items-center rounded-lg px-3 text-sm font-medium ring-1 transition-colors",
-              mine
-                ? "bg-foreground text-background ring-transparent"
-                : "bg-background text-foreground ring-foreground/10 hover:bg-muted",
-            )}
-          >
-            {mine ? "Showing mine" : "Only mine"}
-          </Link>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          {myMemberId && (
+            <Link
+              href={hrefFor({ mine: !mineActive })}
+              className={cn(
+                "inline-flex h-8 shrink-0 items-center rounded-lg px-3 text-sm font-medium ring-1 transition-colors",
+                mineActive
+                  ? "bg-foreground text-background ring-transparent"
+                  : "bg-background text-foreground ring-foreground/10 hover:bg-muted",
+              )}
+            >
+              {mineActive ? "Showing mine" : "Only mine"}
+            </Link>
+          )}
+        </div>
       </div>
 
       <WelcomeTour />
@@ -233,13 +344,13 @@ export default async function RemindersPage({
             than a phone, and a horizontal scroll strip hid "Needs attention"
             past its right edge with nothing to say it was there — which is
             precisely the tab nobody would think to go looking for. */}
-        <div className="flex flex-wrap gap-1 border-b px-3 py-2">
+        <div className="flex flex-wrap items-center gap-1 border-b px-3 py-2">
           {TABS.map((t) => {
             const count = tabCounts.get(t.id) ?? -1
             return (
               <Link
                 key={t.id}
-                href={`/reminders?tab=${t.id}${mine ? "&mine=1" : ""}`}
+                href={hrefFor({ tab: t.id })}
                 aria-current={t.id === tab ? "page" : undefined}
                 className={cn(
                   "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors",
@@ -268,6 +379,39 @@ export default async function RemindersPage({
               </Link>
             )
           })}
+
+          {/* Same row as the tabs, and the same selected treatment.
+              It used to sit in the page header: two rows of pills 458px apart
+              in opposite corners, with INVERTED polarity — the segmented
+              control marked "on" as white-on-grey while the tabs marked it
+              grey-on-white. Nothing said which row filtered the list. One row,
+              one grammar, and a visible word for the dimension.
+
+              Only rendered when there is something to separate: an agency with
+              no birthdays on file would get three options returning identical
+              rows, which reads as a filter that does not work. */}
+          {buckets.policies.length > 0 && buckets.personal.length > 0 && (
+            <div className="ml-auto flex flex-wrap items-center gap-1" role="group">
+              <span className="px-1 text-xs text-muted-foreground" id="view-filter-label">
+                Dates
+              </span>
+              {VIEWS.map((v) => (
+                <Link
+                  key={v.id}
+                  href={hrefFor({ view: v.id })}
+                  aria-current={v.id === view ? "true" : undefined}
+                  className={cn(
+                    "inline-flex h-7 shrink-0 items-center rounded-lg px-3 text-sm font-medium transition-colors",
+                    v.id === view
+                      ? "bg-muted text-foreground"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                  )}
+                >
+                  {v.id === "personal" ? personalLabel : v.id === "policies" ? policiesLabel : v.label}
+                </Link>
+              ))}
+            </div>
+          )}
         </div>
 
         {error ? (
@@ -275,7 +419,19 @@ export default async function RemindersPage({
             Could not load reminders: {error.message}
           </p>
         ) : rows.length === 0 ? (
-          <EmptyState tab={tab} />
+          <EmptyState
+            tab={tab}
+            // Built from EVERY dimension that is narrowing the list, not just
+            // the newest one. Derived from `view` alone, this told an operator
+            // with "Only mine" on and an empty result that nothing was due —
+            // the same falsehood the view handling was written to prevent,
+            // reintroduced one filter over.
+            narrowing={[
+              view === "all" ? null : viewLabel.toLowerCase(),
+              mineActive ? "yours" : null,
+            ].filter((v): v is string => v !== null)}
+            clearHref={hrefFor({ view: "all", mine: false })}
+          />
         ) : (
           <ul className="divide-y">
             {rows.map((row) => {
@@ -362,7 +518,16 @@ export default async function RemindersPage({
   )
 }
 
-function EmptyState({ tab }: { tab: TabId }) {
+function EmptyState({
+  tab,
+  narrowing,
+  clearHref,
+}: {
+  tab: TabId
+  /** Every active filter, named. Empty when the list is unfiltered. */
+  narrowing: string[]
+  clearHref: string
+}) {
   const copy: Record<TabId, { title: string; body: string }> = {
     due: {
       title: "Nothing due right now",
@@ -385,8 +550,24 @@ function EmptyState({ tab }: { tab: TabId }) {
       <div className="rounded-full bg-muted p-3">
         <Inbox className="size-5 text-muted-foreground" strokeWidth={1.75} />
       </div>
-      <p className="text-sm font-medium">{title}</p>
-      <p className="max-w-sm text-sm text-muted-foreground">{body}</p>
+      {/* With a filter on, the unfiltered copy is simply false — there may be
+          twenty reminders due and every one of them a birthday. Saying
+          "nothing due" there sends an operator looking for a bug in the engine
+          instead of at the control they set two clicks ago. */}
+      <p className="text-sm font-medium">
+        {narrowing.length > 0 ? "Nothing here under these filters" : title}
+      </p>
+      <p className="max-w-sm text-sm text-muted-foreground">
+        {narrowing.length > 0 ? `Nothing ${narrowing.join(" and ")} in this tab.` : body}
+      </p>
+      {narrowing.length > 0 && (
+        <Link
+          href={clearHref}
+          className="mt-2 inline-flex h-8 items-center rounded-lg px-3 text-sm font-medium text-brand-ink transition-colors hover:bg-muted hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        >
+          Clear filters
+        </Link>
+      )}
     </div>
   )
 }

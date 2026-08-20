@@ -72,6 +72,85 @@ export async function addContactEvent(
   return { ok: true }
 }
 
+/**
+ * Edit a date in place.
+ *
+ * The reason this is not just an UPDATE: `reminders.event_id` points at this
+ * row, and a queued reminder carries its OWN `occurrence_date` and `due_at`,
+ * computed when it was materialised. Change the date on the event and those
+ * rows do not follow — the materialiser inserts fresh ones for the new date
+ * (the identity key includes occurrence_date), and the stale ones sit in the
+ * queue waiting to tell an agent about a renewal that has moved.
+ *
+ * So the edit clears this event's UNSENT reminders and lets the next cycle
+ * rebuild them. Sent ones stay: they are the record that an agent was told, and
+ * that happened whatever the date says now.
+ *
+ * A `claimed` row is mid-delivery and left alone — deleting it under the worker
+ * would strand the send. It completes against the old date and the stuck-claim
+ * sweep handles it if the worker dies. One stale message in that narrow window
+ * beats a torn write.
+ */
+export async function updateContactEvent(
+  contactId: string,
+  eventId: string,
+  input: EventInput,
+): Promise<ActionResult<{ remindersCleared: number }>> {
+  const tenant = await requireTenant()
+  const admin = createAdminClient()
+
+  const eventType = normalizeEventType(input.event_type)
+  if (!eventType) return { ok: false, error: "An event type is required." }
+
+  const date = parseCalendarDate(input.event_date, "YYYY-MM-DD")
+  if (!date) return { ok: false, error: "That date could not be read." }
+
+  const { data: existing } = await admin
+    .from("contact_events")
+    .select("id, event_type, event_date, label")
+    .eq("id", eventId)
+    .eq("business_id", tenant.businessId)
+    .eq("lead_id", contactId)
+    .maybeSingle<{ id: string; event_type: string; event_date: string; label: string | null }>()
+  if (!existing) return { ok: false, error: "That date no longer exists." }
+
+  const label = input.label?.trim() || null
+  // Only the fields that change what the engine will schedule. Editing a typo
+  // in a label should not throw away a queued reminder.
+  const schedulingChanged =
+    existing.event_type !== eventType || existing.event_date !== date
+
+  const { error } = await admin
+    .from("contact_events")
+    .update({ event_type: eventType, event_date: date, label, recurrence: input.recurrence })
+    .eq("id", eventId)
+    .eq("business_id", tenant.businessId)
+
+  if (error) {
+    if (error.code === "23505") {
+      return { ok: false, error: "This contact already has another date exactly like that." }
+    }
+    return { ok: false, error: error.message }
+  }
+
+  let remindersCleared = 0
+  if (schedulingChanged) {
+    const { data: cleared, error: clearError } = await admin
+      .from("reminders")
+      .delete()
+      .eq("business_id", tenant.businessId)
+      .eq("event_id", eventId)
+      .eq("status", "queued")
+      .select("id")
+    if (clearError) return { ok: false, error: clearError.message }
+    remindersCleared = cleared?.length ?? 0
+  }
+
+  revalidatePath(`/contacts/${contactId}`)
+  revalidatePath("/reminders")
+  return { ok: true, data: { remindersCleared } }
+}
+
 export async function deleteContactEvent(
   contactId: string,
   eventId: string,

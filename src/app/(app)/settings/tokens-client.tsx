@@ -34,8 +34,18 @@ export function TokensClient({
       <div className="mb-6">
         <h2 className="text-base font-semibold">API keys</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          For <code className="font-mono text-xs">POST /api/v1/contacts</code> — the same path the
-          upload wizard uses, so anything that can reach it can feed the engine.
+          Lets another system — your CRM, a script, a Zap — read and write this account without
+          logging in. It covers contacts, their dates, and the reminder queue.
+        </p>
+        {/* The key IS the account. There is no separate "which business" field
+            on an API request: the token identifies the tenant, which is why
+            handing one out is handing out the book. Said plainly here because
+            the row below only shows a prefix, which makes a key look more like
+            a username than a password. */}
+        <p className="mt-2 text-sm text-muted-foreground">
+          Treat it like a password — it carries the same access to this account that you have. Only
+          the first few characters are stored, so a lost key cannot be looked up: revoke it and
+          issue another.
         </p>
       </div>
 
