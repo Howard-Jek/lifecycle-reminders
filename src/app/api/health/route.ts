@@ -33,6 +33,14 @@ export async function GET() {
         phoneNumberId: Boolean(process.env.GOMA_NOTIFY_PHONE_NUMBER_ID?.trim()),
         wabaId: Boolean(process.env.GOMA_NOTIFY_WABA_ID?.trim()),
         accessToken: Boolean(process.env.GOMA_NOTIFY_ACCESS_TOKEN?.trim()),
+        // Booleans, like everything else here — never the values. Both are
+        // reported because each fails in a way that looks like the other's
+        // problem: without verifyToken Meta's handshake is refused and the
+        // dashboard says only "couldn't be validated", and without appSecret
+        // the endpoint verifies fine and then answers 503 to every event
+        // forever, which looks like Meta not sending anything.
+        webhookVerifyToken: Boolean(process.env.GOMA_NOTIFY_VERIFY_TOKEN?.trim()),
+        webhookAppSecret: Boolean(process.env.GOMA_NOTIFY_APP_SECRET?.trim()),
       },
       ai: { anthropic: Boolean(process.env.ANTHROPIC_API_KEY?.trim()) },
       hint:

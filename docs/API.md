@@ -177,6 +177,76 @@ free text**, so a typo on either side produces silence rather than an error.
 
 ---
 
+## WhatsApp delivery
+
+Getting a message onto a handset takes three things in order: an approved template, a
+configured number, and a webhook to hear how it went. All three are drivable from here.
+
+### `GET /api/v1/template`
+
+Where Meta's review has got to.
+
+```json
+{ "ok": true,
+  "template": { "name": "client_event_reminder", "language": "en", "state": "APPROVED",
+                "approved": true, "rejected_reason": null,
+                "headline": "Approved", "detail": "Reminders can be delivered for real." },
+  "dry_run": false }
+```
+
+Branch on **`approved`**, not on `state` — it collapses Meta's six states into the one
+question a caller has, and it will not change if Meta adds a seventh.
+
+`dry_run` is the field worth reading twice. With `REMINDER_DRY_RUN` on, everything downstream
+behaves exactly as if it delivered — reminders flip to `sent`, ids come back — and nothing
+reaches WhatsApp. An approved template plus `dry_run: true` is a silent handset.
+
+`state: "NOT_CONFIGURED"` means the WABA credentials are absent, so Meta was never asked. It
+is a `200`: "not configured" is a legitimate answer to "what state is it in".
+
+### `POST /api/v1/template`
+
+Submit it for review. No body.
+
+Checks first and returns `{ "submitted": false, "already": true, "state": "..." }` when a
+template of that name already exists, because Meta answers a duplicate submission with
+`"Invalid parameter"` and explains itself only in a field most clients never print — which
+reads as a malformed payload when in fact the work is already done.
+
+Approval is typically under an hour. Poll `GET /api/v1/template` until `approved` is true.
+
+### `POST /api/v1/template/test-send`
+
+One real message to one real handset, through the same template and the same sender a
+production reminder uses.
+
+```json
+{ "member_id": "..." }      // preferred — unambiguous, no phone number in the request
+{ "to": "(951) 456-4663" }  // also accepted; country code optional
+```
+
+**The recipient must already be on your team roster.** That is this product's central safety
+property, not a limitation: every message it sends goes to an agent, and nothing here ever
+messages a client. An endpoint that accepted a free-form destination would hand anyone who
+obtained a token a WhatsApp relay sending from a verified business number.
+
+So to message yourself: add your number under **Team**, then call this. A number matching more
+than one member is refused rather than guessed — pass `member_id` to disambiguate.
+
+A send that Meta rejects comes back with the template's current state appended, because
+`#132001` means "not submitted", "still pending" and "wrong language" indistinguishably.
+
+### `POST /api/webhooks/whatsapp` — not part of v1
+
+Meta's callback. **No bearer token**; it authenticates by `X-Hub-Signature-256`, an HMAC of the
+raw body under the Meta app secret, and it is the one endpoint here outside the auth
+middleware. It refuses every POST with `503` until `GOMA_NOTIFY_APP_SECRET` is set rather than
+accepting unsigned bodies in the meantime.
+
+It does two things: flips a reminder to `failed` when Meta reports the send failed — the only
+way that is ever discovered, since the Graph call returns success long before delivery is
+attempted — and stores replies to the platform number.
+
 ## Deliberately absent
 
 Named so you do not go looking:
