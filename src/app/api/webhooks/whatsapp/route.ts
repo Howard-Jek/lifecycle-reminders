@@ -79,7 +79,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, ignored: true })
   }
 
-  const { statuses, messages } = parseWebhookBatch(payload)
+  // Scoped to OUR number, not merely to our Meta App — see parseWebhookBatch.
+  const { statuses, messages } = parseWebhookBatch(payload, {
+    phoneNumberId: process.env.GOMA_NOTIFY_PHONE_NUMBER_ID,
+    wabaId: process.env.GOMA_NOTIFY_WABA_ID,
+  })
 
   try {
     const admin = createAdminClient()

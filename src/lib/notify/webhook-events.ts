@@ -106,7 +106,21 @@ function extractBody(message: Record<string, unknown>, type: string): string | n
   return null
 }
 
-export function parseWebhookBatch(payload: unknown): WebhookBatch {
+/**
+ * Which number this deployment is allowed to act on.
+ *
+ * Both optional: an unset id cannot be checked against, and refusing every
+ * payload because a variable is absent would be a worse failure than the one
+ * this prevents.
+ */
+export type WebhookScope = {
+  /** GOMA_NOTIFY_PHONE_NUMBER_ID — the number reminders are sent FROM. */
+  phoneNumberId?: string
+  /** GOMA_NOTIFY_WABA_ID — the account that number belongs to. */
+  wabaId?: string
+}
+
+export function parseWebhookBatch(payload: unknown, scope: WebhookScope = {}): WebhookBatch {
   const statuses: StatusEvent[] = []
   const messages: InboundMessage[] = []
 
@@ -116,11 +130,42 @@ export function parseWebhookBatch(payload: unknown): WebhookBatch {
   // would be acting on something this app knows nothing about.
   if (asString(root.object) !== "whatsapp_business_account") return { statuses, messages }
 
+  const expectedPhone = scope.phoneNumberId?.trim()
+  const expectedWaba = scope.wabaId?.trim()
+
   for (const entryRaw of asArray(root.entry)) {
-    for (const changeRaw of asArray(asRecord(entryRaw).changes)) {
+    const entry = asRecord(entryRaw)
+    /**
+     * Is this payload even ABOUT our number?
+     *
+     * The signature does not answer that. X-Hub-Signature-256 is keyed on the
+     * Meta APP secret, and an App can carry many WhatsApp Business Accounts —
+     * every one of them signs with the SAME key and posts to the SAME callback
+     * URL. So a valid signature proves "this came from our Meta App", not
+     * "this concerns our platform notifications number".
+     *
+     * With one WABA that distinction is invisible. It stops being invisible at
+     * integration: README and .env.example both say this add-on is meant to
+     * reuse GomaAI's GOMA_NOTIFY_* credentials, and GomaAI onboards a WhatsApp
+     * number PER BUSINESS. Without this check, the first shared-App deployment
+     * would quietly ingest every tenant's customer conversations — message
+     * bodies and phone numbers — into whatsapp_inbound_messages, a table whose
+     * entire purpose is agent replies to one number.
+     */
+    if (expectedWaba && asString(entry.id) && asString(entry.id) !== expectedWaba) continue
+
+    for (const changeRaw of asArray(entry.changes)) {
       const change = asRecord(changeRaw)
       if (asString(change.field) !== "messages") continue
       const value = asRecord(change.value)
+
+      if (expectedPhone) {
+        const from = asString(asRecord(value.metadata).phone_number_id)
+        // A payload with no metadata at all is let through: Meta omits it on
+        // some event shapes, and dropping those would lose real receipts to
+        // guard against a case the WABA check above already covers.
+        if (from && from !== expectedPhone) continue
+      }
 
       for (const raw of asArray(value.statuses)) {
         const status = asRecord(raw)

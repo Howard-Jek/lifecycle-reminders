@@ -356,3 +356,75 @@ describe("the webhook route does not narrow the roster in SQL", () => {
     expect(source).toMatch(/>= ROSTER_CAP/)
   })
 })
+
+describe("payloads are scoped to OUR number, not merely to our Meta App", () => {
+  const OURS = { phoneNumberId: "111111111111111", wabaId: "100000000000001" }
+
+  const payload = (wabaId: string, phoneNumberId: string) => ({
+    object: "whatsapp_business_account",
+    entry: [
+      {
+        id: wabaId,
+        changes: [
+          {
+            field: "messages",
+            value: {
+              metadata: { phone_number_id: phoneNumberId },
+              messages: [
+                { id: "wamid.X", from: "6591110022", type: "text", text: { body: "hello" } },
+              ],
+              statuses: [{ id: "wamid.S", status: "failed", errors: [{ code: 131026 }] }],
+            },
+          },
+        ],
+      },
+    ],
+  })
+
+  it("accepts a payload about our own number", () => {
+    const batch = parseWebhookBatch(payload(OURS.wabaId, OURS.phoneNumberId), OURS)
+    expect(batch.messages).toHaveLength(1)
+    expect(batch.statuses).toHaveLength(1)
+  })
+
+  it("DROPS a validly-signed payload about another WABA", () => {
+    // The signature cannot distinguish these: one Meta App can carry many
+    // WhatsApp Business Accounts, and every one signs with the same app secret
+    // and posts to the same URL. Once this add-on reuses GomaAI's credentials
+    // — which .env.example says is the plan — every tenant's customer
+    // conversations would otherwise land in whatsapp_inbound_messages.
+    const batch = parseWebhookBatch(payload("200000000000002", "999999999999999"), OURS)
+    expect(batch).toEqual({ statuses: [], messages: [] })
+  })
+
+  it("DROPS a payload about a different number on the same WABA", () => {
+    const batch = parseWebhookBatch(payload(OURS.wabaId, "999999999999999"), OURS)
+    expect(batch).toEqual({ statuses: [], messages: [] })
+  })
+
+  it("accepts everything when no scope is configured", () => {
+    // Refusing every payload because an env var is absent would be a worse
+    // failure than the one this guards against.
+    const batch = parseWebhookBatch(payload("whatever", "whoever"))
+    expect(batch.messages).toHaveLength(1)
+  })
+
+  it("does not drop an event that simply carries no metadata", () => {
+    // Meta omits metadata on some event shapes. The WABA check still applies.
+    const batch = parseWebhookBatch(
+      {
+        object: "whatsapp_business_account",
+        entry: [
+          {
+            id: OURS.wabaId,
+            changes: [
+              { field: "messages", value: { statuses: [{ id: "w", status: "failed" }] } },
+            ],
+          },
+        ],
+      },
+      OURS,
+    )
+    expect(batch.statuses).toHaveLength(1)
+  })
+})
