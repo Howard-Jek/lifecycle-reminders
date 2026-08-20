@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { createHmac } from "node:crypto"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import { verifySubscription, verifySignature } from "@/lib/notify/webhook-verify"
 import { parseWebhookBatch, buildSenderIndex, matchSender } from "@/lib/notify/webhook-events"
 
@@ -317,5 +319,40 @@ describe("attribution survives inconsistent number FORMATTING", () => {
       { id: "m1", business_id: "biz-a", whatsapp_number: "+65 9888 7777" },
     ])
     expect(matchSender(index, "6598887777").match).toEqual({ id: "m1", business_id: "biz-a" })
+  })
+})
+
+describe("the webhook route does not narrow the roster in SQL", () => {
+  // Source-level, matching how api.test.ts pins tenancy. The unit tests above
+  // prove buildSenderIndex refuses an ambiguous sender, but that guard is only
+  // as good as what reaches it: an earlier version prefiltered the roster with
+  // .in() on EXACT strings while the index compares DIGITS, so a differently
+  // formatted duplicate was never fetched, the number looked unique, and the
+  // reply was filed under one of two tenants. That defect is invisible from
+  // inside buildSenderIndex — it lives in the query in front of it.
+  const source = readFileSync(
+    join(process.cwd(), "src/app/api/webhooks/whatsapp/route.ts"),
+    "utf8",
+  )
+
+  it("reads the roster without an exact-string .in() filter", () => {
+    const rosterQuery = source.slice(
+      source.indexOf('.from("team_members")'),
+      source.indexOf("buildSenderIndex("),
+    )
+    // SELECTing whatsapp_number is required — the index is built from it.
+    // FILTERING on it is the defect: that is the exact-string comparison the
+    // digit-based index cannot see past.
+    expect(rosterQuery).toContain('select("id, business_id, whatsapp_number")')
+    expect(rosterQuery).not.toContain(".in(")
+    expect(rosterQuery).not.toMatch(/\.eq\(\s*["']whatsapp_number/)
+    expect(rosterQuery).not.toMatch(/\.i?like\(\s*["']whatsapp_number/)
+  })
+
+  it("still bounds the read, so a large roster cannot be silently truncated", () => {
+    // PostgREST caps at 1000 by default; a truncated roster would make a
+    // duplicated number look unique again — the same bug by a different door.
+    expect(source).toContain("ROSTER_CAP")
+    expect(source).toMatch(/>= ROSTER_CAP/)
   })
 })

@@ -136,7 +136,30 @@ async function recordFailedSends(admin: Admin, statuses: StatusEvent[]): Promise
       .select("id")
 
     if (error) throw new Error(`marking ${failure.wamid} failed: ${error.message}`)
-    updated += data?.length ?? 0
+
+    const matched = data?.length ?? 0
+    if (matched === 0) {
+      /**
+       * A signed failure receipt that matched nothing, said out loud.
+       *
+       * The `status = 'sent'` filter above is right — without it a late receipt
+       * would drag a since-requeued reminder back to failed and it would never
+       * retry — but it also drops receipts that arrive while the row is still
+       * `claimed`, which is a live race: Meta can deliver a failure webhook
+       * before markReminderSent() has committed. Dropping the row is the
+       * correct write; dropping METAS REASON with it is not, because that
+       * reason is the only explanation of the failure anyone will ever get.
+       *
+       * The reminder itself is not lost — the stuck-claim sweep requeues it —
+       * so this is a log line rather than a second write, which would risk
+       * exactly the clobber the filter prevents.
+       */
+      console.warn(
+        `[whatsapp-webhook] failure receipt for ${failure.wamid} matched no sent reminder ` +
+          `(already requeued, or still claimed): ${failure.error ?? "no reason given"}`,
+      )
+    }
+    updated += matched
   }
   return updated
 }
