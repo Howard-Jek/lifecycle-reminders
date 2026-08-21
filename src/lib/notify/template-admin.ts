@@ -238,3 +238,75 @@ export function describeState(status: Extract<TemplateStatus, { ok: true }>): {
       }
   }
 }
+
+
+/**
+ * The state of the number we send FROM.
+ *
+ * Exists because "#133010 Account not registered" names a condition without
+ * naming its subject, and the natural reading is the wrong one: it sounds like
+ * the RECIPIENT is not registered. Recipients register nothing — anyone with
+ * WhatsApp can receive a business template. It is the SENDING number that must
+ * complete Cloud API registration, and that is a step separate from adding the
+ * number to a WABA, which is why a number can look perfectly healthy in the
+ * dashboard and still refuse every send.
+ */
+export type PhoneNumberStatus =
+  | {
+      ok: true
+      /** The dialable number, so you can see WHICH number this deployment uses. */
+      displayPhoneNumber: string | null
+      verifiedName: string | null
+      /** CONNECTED once registration is complete. */
+      status: string | null
+      /** CLOUD_API when registered for the Cloud API; NOT_APPLICABLE when not. */
+      platformType: string | null
+      qualityRating: string | null
+      /** True when Meta reports it as usable for Cloud API sends. */
+      registered: boolean
+    }
+  | { ok: false; error: string }
+
+export async function fetchPhoneNumberStatus(
+  accessToken: string,
+  phoneNumberId: string,
+): Promise<PhoneNumberStatus> {
+  const url =
+    `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}` +
+    `?fields=display_phone_number,verified_name,status,platform_type,quality_rating`
+
+  let res: Response
+  try {
+    res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } })
+  } catch (e) {
+    return { ok: false, error: `could not reach graph.facebook.com — ${(e as Error).message}` }
+  }
+
+  const data = (await res.json().catch(() => null)) as
+    | {
+        display_phone_number?: string
+        verified_name?: string
+        status?: string
+        platform_type?: string
+        quality_rating?: string
+        error?: GraphError
+      }
+    | null
+
+  if (!res.ok) return { ok: false, error: describeGraphError(data?.error, res.status) }
+
+  const status = data?.status ?? null
+  const platformType = data?.platform_type ?? null
+  return {
+    ok: true,
+    displayPhoneNumber: data?.display_phone_number ?? null,
+    verifiedName: data?.verified_name ?? null,
+    status,
+    platformType,
+    qualityRating: data?.quality_rating ?? null,
+    // Both signals, because either alone has been misleading: a number can read
+    // CONNECTED while platform_type says NOT_APPLICABLE, which is exactly the
+    // shape of a number added to a WABA but never registered.
+    registered: status === "CONNECTED" && platformType === "CLOUD_API",
+  }
+}
