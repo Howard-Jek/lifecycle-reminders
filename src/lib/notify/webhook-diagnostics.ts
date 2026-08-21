@@ -130,6 +130,66 @@ function redactProbe(probe: Probe, secret: string): Probe {
   }
 }
 
+/**
+ * WHICH of the three rows did this deployment actually get?
+ *
+ * Vercel scopes variables per environment, so GOMA_NOTIFY_VERIFY_TOKEN
+ * legitimately exists three times — Production, Preview, Development — and
+ * /api/health only ever said `true`. A boolean cannot tell you that the
+ * preview you are testing holds a different token from the one Meta calls,
+ * which is a fault that looks exactly like a wrong token and is not one.
+ *
+ * Length and surrounding whitespace are enough to line the three rows up
+ * against each other and against Meta's box. Neither discloses the value: a
+ * length is not a secret, and the whitespace flag is the one property that
+ * routinely breaks this and is invisible in every UI that shows it.
+ */
+export function fingerprintVerifyToken(raw: string | undefined): Probe {
+  const label = "The verify token this deployment holds"
+  // "local" rather than a guess: absent VERCEL_ENV means this is not running on
+  // Vercel at all, and saying "development" would name a row that is not in play.
+  const environment = process.env.VERCEL_ENV?.trim() || "local"
+
+  if (!raw || !raw.trim()) {
+    return {
+      label,
+      tone: "bad",
+      status: null,
+      detail:
+        "GOMA_NOTIFY_VERIFY_TOKEN is not set on this deployment. If it is set in Vercel, it is " +
+        "set for a DIFFERENT environment than this one — or was added without redeploying.",
+      evidence: `environment: ${environment} · not configured`,
+    }
+  }
+
+  const trimmed = raw.trim()
+  const padded = trimmed.length !== raw.length
+
+  if (padded) {
+    return {
+      label,
+      tone: "bad",
+      status: null,
+      detail:
+        "The stored value has whitespace around it. This end trims it, so the handshake still " +
+        "works — but it means the value was pasted with padding, and the SAME paste into Meta's " +
+        "box is not trimmed and does fail. Re-copy both from one source.",
+      evidence: `environment: ${environment} · ${trimmed.length} characters + surrounding whitespace`,
+    }
+  }
+
+  return {
+    label,
+    tone: "good",
+    status: null,
+    detail:
+      `${trimmed.length} characters, no surrounding whitespace. Compare that count against the ` +
+      `other environments' rows and against the token in Meta's dashboard — a different length ` +
+      `is a different token, and is the whole fault.`,
+    evidence: `environment: ${environment} · ${trimmed.length} characters`,
+  }
+}
+
 /** The callback URL this deployment believes it serves. */
 export function callbackUrlFor(publicUrl: string): string {
   return `${publicUrl.replace(/\/+$/, "")}${WEBHOOK_PATH}`

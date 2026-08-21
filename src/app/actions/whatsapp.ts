@@ -12,6 +12,7 @@ import {
 import { CLIENT_EVENT_REMINDER_TEMPLATE } from "@/lib/notify/client-event-reminder"
 import {
   callbackUrlFor,
+  fingerprintVerifyToken,
   probeCallbackUrl,
   probeStoredSubscription,
   registerSubscription,
@@ -141,6 +142,9 @@ export async function diagnoseWebhook(): Promise<WebhookDiagnosis> {
   const callbackUrl = callbackUrlFor(appPublicUrl())
 
   const probes: Probe[] = [
+    // Config before behaviour. "Which token does this deployment even hold?"
+    // has to be answerable before "why was it refused?" means anything.
+    fingerprintVerifyToken(process.env.GOMA_NOTIFY_VERIFY_TOKEN),
     await probeCallbackUrl(callbackUrl, process.env.GOMA_NOTIFY_VERIFY_TOKEN),
   ]
 

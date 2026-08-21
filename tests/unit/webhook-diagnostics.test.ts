@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
 import {
   callbackUrlFor,
+  fingerprintVerifyToken,
   probeCallbackUrl,
   WEBHOOK_PATH,
 } from "@/lib/notify/webhook-diagnostics"
@@ -195,5 +196,62 @@ describe("probeCallbackUrl", () => {
     const requested = new URL(String(spy.mock.calls[0][0]))
     expect(requested.searchParams.get("hub.verify_token")).toBe(TOKEN)
     expect(requested.searchParams.get("hub.mode")).toBe("subscribe")
+  })
+})
+
+describe("fingerprintVerifyToken", () => {
+  /**
+   * The point of this probe is telling three Vercel environment rows apart
+   * without printing any of them. A test that only checked "returns a Probe"
+   * would miss the one property that matters: the value never appears.
+   */
+
+  it("reports the length and the environment it is running in", () => {
+    vi.stubEnv("VERCEL_ENV", "production")
+    const probe = fingerprintVerifyToken(TOKEN)
+    expect(probe.tone).toBe("good")
+    expect(probe.evidence).toContain("production")
+    expect(probe.evidence).toContain(String(TOKEN.length))
+  })
+
+  it("says 'local' rather than guessing an environment off Vercel", () => {
+    // Naming "development" here would point at a Vercel row that is not in play.
+    vi.stubEnv("VERCEL_ENV", "")
+    expect(fingerprintVerifyToken(TOKEN).evidence).toContain("local")
+  })
+
+  it("flags surrounding whitespace, and reports the TRIMMED length", () => {
+    const probe = fingerprintVerifyToken(`  ${TOKEN}\n`)
+    expect(probe.tone).toBe("bad")
+    expect(probe.detail).toMatch(/whitespace/i)
+    // The trimmed length is the one to compare against Meta's box; reporting
+    // the padded length would send someone hunting for a token 3 characters
+    // longer than the one they have.
+    expect(probe.evidence).toContain(`${TOKEN.length} characters + surrounding whitespace`)
+  })
+
+  it("treats an unset token as unset", () => {
+    for (const empty of [undefined, "", "   "]) {
+      const probe = fingerprintVerifyToken(empty)
+      expect(probe.tone).toBe("bad")
+      expect(probe.detail).toMatch(/not set on this deployment/i)
+    }
+  })
+
+  it("blames the environment scoping, not the operator, when absent", () => {
+    // The common cause is a variable set for Preview only, or set without a
+    // redeploy — not a variable nobody ever typed.
+    const probe = fingerprintVerifyToken(undefined)
+    expect(probe.detail).toMatch(/DIFFERENT environment|without redeploying/i)
+  })
+
+  it("NEVER contains the token value", () => {
+    for (const raw of [TOKEN, `  ${TOKEN}  `, `${TOKEN}\n`]) {
+      const probe = fingerprintVerifyToken(raw)
+      const shown = `${probe.label} ${probe.detail} ${probe.evidence ?? ""}`
+      expect(shown).not.toContain(TOKEN)
+      // Nor any run of it long enough to narrow a guess.
+      expect(shown).not.toContain(TOKEN.slice(0, 6))
+    }
   })
 })
