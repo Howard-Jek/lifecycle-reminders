@@ -50,6 +50,7 @@ export async function GET(request: Request) {
       display_phone_number: status.displayPhoneNumber,
       verified_name: status.verifiedName,
       name_status: status.nameStatus,
+      new_name_status: status.newNameStatus,
       status: status.status,
       platform_type: status.platformType,
       quality_rating: status.qualityRating,
@@ -65,7 +66,11 @@ export async function GET(request: Request) {
       // other is a name Meta will accept.
       detail: status.registered
         ? "Ready — registered, on the Cloud API, and the display name is accepted."
-        : status.nameStatus === "DECLINED"
+        : status.newNameStatus && status.newNameStatus !== "NONE" && status.newNameStatus !== "APPROVED"
+          ? `A new display name is with Meta (${status.newNameStatus}). Until it is approved the ` +
+            `number still reports the old name "${status.verifiedName}" and sending stays ` +
+            "restricted — that is expected, not a failed submission."
+          : status.nameStatus === "DECLINED"
           ? `Display name "${status.verifiedName}" was DECLINED by Meta. Sending is restricted ` +
             "until a name is approved, and the Graph API still returns a message id for every " +
             "send — so messages are accepted and never delivered. Fix it in WhatsApp Manager -> " +

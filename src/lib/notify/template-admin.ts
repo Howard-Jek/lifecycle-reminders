@@ -265,6 +265,15 @@ export type PhoneNumberStatus =
        * Graph call still returns a message id.
        */
       nameStatus: string | null
+      /**
+       * The review state of a NEWLY SUBMITTED display name.
+       *
+       * Meta keeps the old name in verified_name until a replacement is
+       * approved, so after submitting a new one the number still reports the
+       * rejected name and DECLINED — which reads exactly like the submission
+       * never happened. This is the only field that shows it did.
+       */
+      newNameStatus: string | null
       /** CONNECTED once registration is complete. */
       status: string | null
       /** CLOUD_API when registered for the Cloud API; NOT_APPLICABLE when not. */
@@ -281,7 +290,7 @@ export async function fetchPhoneNumberStatus(
 ): Promise<PhoneNumberStatus> {
   const url =
     `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}` +
-    `?fields=display_phone_number,verified_name,name_status,status,platform_type,quality_rating`
+    `?fields=display_phone_number,verified_name,name_status,new_name_status,status,platform_type,quality_rating`
 
   let res: Response
   try {
@@ -295,6 +304,7 @@ export async function fetchPhoneNumberStatus(
         display_phone_number?: string
         verified_name?: string
         name_status?: string
+        new_name_status?: string
         status?: string
         platform_type?: string
         quality_rating?: string
@@ -307,11 +317,13 @@ export async function fetchPhoneNumberStatus(
   const status = data?.status ?? null
   const platformType = data?.platform_type ?? null
   const nameStatus = data?.name_status ?? null
+  const newNameStatus = data?.new_name_status ?? null
   return {
     ok: true,
     displayPhoneNumber: data?.display_phone_number ?? null,
     verifiedName: data?.verified_name ?? null,
     nameStatus,
+    newNameStatus,
     status,
     platformType,
     qualityRating: data?.quality_rating ?? null,
