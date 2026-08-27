@@ -257,6 +257,14 @@ export type PhoneNumberStatus =
       /** The dialable number, so you can see WHICH number this deployment uses. */
       displayPhoneNumber: string | null
       verifiedName: string | null
+      /**
+       * The DISPLAY NAME's review state, which is not the number's state and
+       * fails independently of it. APPROVED / AVAILABLE_WITHOUT_REVIEW are fine;
+       * DECLINED means Meta rejected the name and the number's ability to send
+       * is restricted while it stands — with no error at send time, because the
+       * Graph call still returns a message id.
+       */
+      nameStatus: string | null
       /** CONNECTED once registration is complete. */
       status: string | null
       /** CLOUD_API when registered for the Cloud API; NOT_APPLICABLE when not. */
@@ -273,7 +281,7 @@ export async function fetchPhoneNumberStatus(
 ): Promise<PhoneNumberStatus> {
   const url =
     `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}` +
-    `?fields=display_phone_number,verified_name,status,platform_type,quality_rating`
+    `?fields=display_phone_number,verified_name,name_status,status,platform_type,quality_rating`
 
   let res: Response
   try {
@@ -286,6 +294,7 @@ export async function fetchPhoneNumberStatus(
     | {
         display_phone_number?: string
         verified_name?: string
+        name_status?: string
         status?: string
         platform_type?: string
         quality_rating?: string
@@ -297,17 +306,27 @@ export async function fetchPhoneNumberStatus(
 
   const status = data?.status ?? null
   const platformType = data?.platform_type ?? null
+  const nameStatus = data?.name_status ?? null
   return {
     ok: true,
     displayPhoneNumber: data?.display_phone_number ?? null,
     verifiedName: data?.verified_name ?? null,
+    nameStatus,
     status,
     platformType,
     qualityRating: data?.quality_rating ?? null,
-    // Both signals, because either alone has been misleading: a number can read
-    // CONNECTED while platform_type says NOT_APPLICABLE, which is exactly the
-    // shape of a number added to a WABA but never registered.
-    registered: status === "CONNECTED" && platformType === "CLOUD_API",
+    // THREE signals, because each fails independently and none of them is
+    // visible at send time. A number can read CONNECTED (registered) with
+    // platform_type CLOUD_API (on the right platform) and still deliver
+    // nothing, because its DISPLAY NAME was declined — Meta restricts sending
+    // on a rejected name while the Graph call goes on returning message ids.
+    // Leaving name_status out of this is what turned a one-field answer into an
+    // afternoon of guessing.
+    registered:
+      status === "CONNECTED" &&
+      platformType === "CLOUD_API" &&
+      nameStatus !== "DECLINED" &&
+      nameStatus !== "PENDING_REVIEW",
   }
 }
 

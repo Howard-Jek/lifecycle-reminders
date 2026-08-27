@@ -49,6 +49,7 @@ export async function GET(request: Request) {
       phone_number_id: phoneNumberId,
       display_phone_number: status.displayPhoneNumber,
       verified_name: status.verifiedName,
+      name_status: status.nameStatus,
       status: status.status,
       platform_type: status.platformType,
       quality_rating: status.qualityRating,
@@ -60,10 +61,22 @@ export async function GET(request: Request) {
       webhook_receiving: subs && subs.ok ? subs.subscribedApps.length > 0 : null,
       webhook_error: subs && !subs.ok ? subs.error : null,
       dry_run: isDryRun(),
+      // Named separately because the remedies are unrelated: one is a PIN, the
+      // other is a name Meta will accept.
       detail: status.registered
-        ? "Registered for the Cloud API — sends should reach a handset."
-        : "NOT registered for the Cloud API. Every send fails #133010 until this is done: " +
-          "Meta -> WhatsApp -> API Setup -> register this number with your 6-digit PIN.",
+        ? "Ready — registered, on the Cloud API, and the display name is accepted."
+        : status.nameStatus === "DECLINED"
+          ? `Display name "${status.verifiedName}" was DECLINED by Meta. Sending is restricted ` +
+            "until a name is approved, and the Graph API still returns a message id for every " +
+            "send — so messages are accepted and never delivered. Fix it in WhatsApp Manager -> " +
+            "Phone numbers -> Profile -> Display name, using a name that matches the business."
+          : status.nameStatus === "PENDING_REVIEW"
+            ? `Display name "${status.verifiedName}" is awaiting Meta's review. Sending may be ` +
+              "restricted until it is approved."
+            : status.status !== "CONNECTED" || status.platformType !== "CLOUD_API"
+              ? "NOT registered for the Cloud API. Every send fails #133010 until this is done: " +
+                "Meta -> WhatsApp -> API Setup -> register this number with your 6-digit PIN."
+              : "Not ready to send; see status, platform_type and name_status above.",
     })
   })
 }
