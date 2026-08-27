@@ -19,10 +19,25 @@
 # is the same one Vercel Cron calls and the same function `scripts/tick.ts` runs
 # locally — swapping the driver changes no behaviour.
 #
-# THE VERCEL CRON STAYS. It is a daily backstop: GitHub disables scheduled
-# workflows in repositories with no activity for 60 days, and a reminder engine
-# that quietly stops is the failure this whole product is about. If this workflow
-# dies, the daily run still catches the morning window rather than nothing.
+# THE VERCEL CRON WAS a daily backstop, and is currently REMOVED. Read this
+# before restoring either scheduler.
+#
+# The backstop reasoning still holds: GitHub disables scheduled workflows in
+# repositories idle for 60 days, and a reminder engine that quietly stops is the
+# failure this whole product is about. It was removed anyway, deliberately and
+# temporarily, because the roster is still SEEDED DEMO DATA — three fabricated
+# Singapore numbers, each on two businesses — and roughly 2,300 reminders are
+# queued against them. Both schedulers off is the only thing standing between a
+# freshly-registered sending number and several hundred unsolicited WhatsApp
+# messages to strangers, which is how a business number gets banned.
+#
+# TO RESTORE, in this order and not before:
+#   1. Replace the demo roster numbers in team_members with real ones.
+#   2. Decide what happens to the queued backlog — it is mostly historical and
+#      probably wants clearing rather than sending.
+#   3. `gh workflow enable "Reminder tick"` (this file).
+#   4. Put the crons block back in vercel.json for the daily backstop:
+#      "crons": [{ "path": "/api/cron/process-reminders", "schedule": "0 1 * * *" }]
 #
 # SETUP — two repository secrets, Settings → Secrets and variables → Actions:
 #   CRON_SECRET   the same value as the Vercel environment variable
