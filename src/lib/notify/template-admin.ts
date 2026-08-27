@@ -397,3 +397,36 @@ export async function fetchSubscribedApps(
     })),
   }
 }
+
+
+/**
+ * Subscribe this app to the WABA's webhooks.
+ *
+ * The counterpart to fetchSubscribedApps: verifying the callback URL proves we
+ * own it, this is what actually turns the tap on. Without it Meta accepts every
+ * send, returns a real message id, and never reports what became of it — the
+ * message simply disappears, and so does every failure reason.
+ *
+ * Idempotent: subscribing an already-subscribed app succeeds and changes
+ * nothing, so it is safe to call whenever the diagnostic says the list is
+ * empty.
+ */
+export async function subscribeApp(
+  accessToken: string,
+  wabaId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  let res: Response
+  try {
+    res = await fetch(
+      `https://graph.facebook.com/${GRAPH_API_VERSION}/${wabaId}/subscribed_apps`,
+      { method: "POST", headers: { Authorization: `Bearer ${accessToken}` } },
+    )
+  } catch (e) {
+    return { ok: false, error: `could not reach graph.facebook.com — ${(e as Error).message}` }
+  }
+  const data = (await res.json().catch(() => null)) as
+    | { success?: boolean; error?: GraphError }
+    | null
+  if (!res.ok) return { ok: false, error: describeGraphError(data?.error, res.status) }
+  return { ok: true }
+}
