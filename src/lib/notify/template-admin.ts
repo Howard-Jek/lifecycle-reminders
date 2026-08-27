@@ -310,3 +310,48 @@ export async function fetchPhoneNumberStatus(
     registered: status === "CONNECTED" && platformType === "CLOUD_API",
   }
 }
+
+export type RegisterResult = { ok: true } | { ok: false; error: string }
+
+/**
+ * Register the sending number for the Cloud API.
+ *
+ * The step that clears "#133010 Account not registered", and it is separate
+ * from adding the number to a WABA — which is why a number can sit in the
+ * dashboard looking healthy and still refuse every send.
+ *
+ * The PIN is the number's six-digit two-step verification PIN. If two-step was
+ * never enabled, this call SETS it to whatever is passed; if it was, the value
+ * must match. Meta rate-limits wrong attempts and will lock registration for a
+ * period, so this is not something to brute force — get the PIN from whoever
+ * set it up rather than guessing.
+ */
+export async function registerPhoneNumber(
+  accessToken: string,
+  phoneNumberId: string,
+  pin: string,
+): Promise<RegisterResult> {
+  let res: Response
+  try {
+    res = await fetch(
+      `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/register`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ messaging_product: "whatsapp", pin }),
+      },
+    )
+  } catch (e) {
+    return { ok: false, error: `could not reach graph.facebook.com — ${(e as Error).message}` }
+  }
+
+  const data = (await res.json().catch(() => null)) as
+    | { success?: boolean; error?: GraphError }
+    | null
+
+  if (!res.ok) return { ok: false, error: describeGraphError(data?.error, res.status) }
+  return { ok: true }
+}
