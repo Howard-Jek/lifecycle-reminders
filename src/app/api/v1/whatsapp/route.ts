@@ -1,7 +1,7 @@
 import { withApiToken } from "@/lib/api/handler"
 import { ok } from "@/lib/api/respond"
 import { isDryRun } from "@/lib/env"
-import { fetchPhoneNumberStatus } from "@/lib/notify/template-admin"
+import { fetchPhoneNumberStatus, fetchSubscribedApps } from "@/lib/notify/template-admin"
 
 /**
  * GET /api/v1/whatsapp — the state of the number this deployment sends FROM.
@@ -31,7 +31,14 @@ export async function GET(request: Request) {
       })
     }
 
-    const status = await fetchPhoneNumberStatus(accessToken, phoneNumberId)
+    const wabaId = process.env.GOMA_NOTIFY_WABA_ID?.trim()
+    // Both in one wave: a number that can send and a webhook that reports back
+    // are separate prerequisites, and each fails in a way that looks like the
+    // other's problem.
+    const [status, subs] = await Promise.all([
+      fetchPhoneNumberStatus(accessToken, phoneNumberId),
+      wabaId ? fetchSubscribedApps(accessToken, wabaId) : Promise.resolve(null),
+    ])
     if (!status.ok) return ok({ configured: true, ok: false, detail: status.error })
 
     return ok({
@@ -46,6 +53,12 @@ export async function GET(request: Request) {
       platform_type: status.platformType,
       quality_rating: status.qualityRating,
       registered: status.registered,
+      // Empty means Meta will never tell us how a send went: no delivery
+      // receipts, no failure reasons, nothing in Needs attention. The handshake
+      // passing says nothing about this.
+      webhook_subscribed_apps: subs && subs.ok ? subs.subscribedApps : null,
+      webhook_receiving: subs && subs.ok ? subs.subscribedApps.length > 0 : null,
+      webhook_error: subs && !subs.ok ? subs.error : null,
       dry_run: isDryRun(),
       detail: status.registered
         ? "Registered for the Cloud API — sends should reach a handset."

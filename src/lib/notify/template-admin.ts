@@ -355,3 +355,45 @@ export async function registerPhoneNumber(
   if (!res.ok) return { ok: false, error: describeGraphError(data?.error, res.status) }
   return { ok: true }
 }
+
+
+/**
+ * Which apps are subscribed to this WABA's webhooks.
+ *
+ * Verifying the callback URL and SUBSCRIBING to webhook fields are two
+ * different actions in Meta's dashboard, and the first is the one that gives
+ * you a satisfying green tick. An app can therefore pass the handshake, show a
+ * verified URL, and receive nothing at all — for ever, silently, because a
+ * webhook that is not subscribed produces no error and no traffic.
+ *
+ * Worth checking whenever the symptom is "we never hear anything back".
+ */
+export type SubscriptionStatus =
+  | { ok: true; subscribedApps: Array<{ id: string | null; name: string | null }> }
+  | { ok: false; error: string }
+
+export async function fetchSubscribedApps(
+  accessToken: string,
+  wabaId: string,
+): Promise<SubscriptionStatus> {
+  let res: Response
+  try {
+    res = await fetch(
+      `https://graph.facebook.com/${GRAPH_API_VERSION}/${wabaId}/subscribed_apps`,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    )
+  } catch (e) {
+    return { ok: false, error: `could not reach graph.facebook.com — ${(e as Error).message}` }
+  }
+  const data = (await res.json().catch(() => null)) as
+    | { data?: Array<{ whatsapp_business_api_data?: { id?: string; name?: string } }>; error?: GraphError }
+    | null
+  if (!res.ok) return { ok: false, error: describeGraphError(data?.error, res.status) }
+  return {
+    ok: true,
+    subscribedApps: (data?.data ?? []).map((row) => ({
+      id: row.whatsapp_business_api_data?.id ?? null,
+      name: row.whatsapp_business_api_data?.name ?? null,
+    })),
+  }
+}
