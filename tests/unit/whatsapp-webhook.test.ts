@@ -153,7 +153,13 @@ describe("parseWebhookBatch", () => {
       }),
     )
     expect(batch.statuses).toEqual([
-      { wamid: "wamid.ABC", status: "failed", error: "[131047] 24h window" },
+      {
+        wamid: "wamid.ABC",
+        status: "failed",
+        error: "[131047] 24h window",
+        recipient: null,
+        occurredAt: null,
+      },
     ])
   })
 
@@ -470,5 +476,50 @@ describe("a scope mismatch is counted, not swallowed", () => {
     const b = parseWebhookBatch(entry(OURS.wabaId, OURS.phoneNumberId), OURS)
     expect(b.skipped).toEqual({ wabaMismatch: 0, phoneMismatch: 0 })
     expect(b.statuses).toHaveLength(1)
+  })
+})
+
+describe("statuses carry who and when, so a receipt can be recorded", () => {
+  it("reads recipient_id and timestamp off a status", () => {
+    // Kept because a receipt with no recipient and no time is a row that
+    // cannot answer "what happened to the message I sent Howard at 4pm" —
+    // which is the only question the table exists for.
+    const batch = parseWebhookBatch({
+      object: "whatsapp_business_account",
+      entry: [
+        {
+          changes: [
+            {
+              field: "messages",
+              value: {
+                statuses: [
+                  {
+                    id: "wamid.Q",
+                    status: "delivered",
+                    recipient_id: "6581115611",
+                    timestamp: "1755600000",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    })
+    expect(batch.statuses[0]).toEqual({
+      wamid: "wamid.Q",
+      status: "delivered",
+      error: null,
+      recipient: "6581115611",
+      occurredAt: "2025-08-19T10:40:00.000Z",
+    })
+  })
+
+  it("tolerates a status with neither", () => {
+    const batch = parseWebhookBatch({
+      object: "whatsapp_business_account",
+      entry: [{ changes: [{ field: "messages", value: { statuses: [{ id: "w", status: "read" }] } }] }],
+    })
+    expect(batch.statuses[0]).toMatchObject({ recipient: null, occurredAt: null })
   })
 })
