@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { withApiToken, readLimit, readOffset } from "@/lib/api/handler"
 import { ok, badRequest } from "@/lib/api/respond"
 import { toPublicReminder, type PublicReminder } from "@/lib/api/serialize"
+import { ATTENTION_FILTER } from "@/lib/lifecycle/inbox-filters"
 
 /**
  * GET /api/v1/reminders — what the engine has decided is worth a conversation.
@@ -45,20 +46,28 @@ export async function GET(request: Request) {
     let query = admin
       .from("reminders")
       .select(
-        "id, status, occurrence_date, due_at, sent_at, attempts, suggestion, error, member_id, event_id, rule_id",
+        "id, status, occurrence_date, due_at, sent_at, attempts, next_attempt_at, suggestion, error, member_id, event_id, rule_id",
         { count: "exact" },
       )
       .eq("business_id", caller.businessId)
       .range(offset, offset + limit - 1)
 
     if (view === "due") {
-      query = query.eq("status", "queued").lte("due_at", nowIso).order("due_at", { ascending: true })
+      query = query
+        .eq("status", "queued")
+        .lte("due_at", nowIso)
+        // Untried work only, matching the inbox. A row that failed once is
+        // queued too, and leaving it here told an integrator it was fresh work
+        // while the UI was calling it a retry — the same row, two answers.
+        .eq("attempts", 0)
+        .order("due_at", { ascending: true })
     } else if (view === "upcoming") {
       query = query.eq("status", "queued").gt("due_at", nowIso).order("due_at", { ascending: true })
     } else if (view === "attention") {
-      // Delivered nowhere, loudly or quietly. `skipped` is the quiet one and is
-      // the reason this view exists at all.
-      query = query.in("status", ["failed", "skipped"]).order("due_at", { ascending: false })
+      // Delivered nowhere, loudly or quietly, or waiting on a retry. `skipped`
+      // is the quiet one and is the reason this view exists at all. Shared with
+      // the inbox so the two cannot drift into disagreeing.
+      query = query.or(ATTENTION_FILTER).order("due_at", { ascending: false })
     } else if (status) {
       query = query.eq("status", status).order("due_at", { ascending: false })
     } else {

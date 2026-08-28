@@ -24,7 +24,7 @@ This is a standalone add-on for [`jottiteam/lead-reactivation-agent`](https://gi
 
 - **Claim-then-send.** A conditional `UPDATE … WHERE status = 'queued'` wins the row before any observable side effect, so two overlapping ticks can never send twice.
 - **At-most-once is Postgres's guarantee, not the application's** — `UNIQUE NULLS NOT DISTINCT (event_id, rule_id, occurrence_date, member_id)` on `reminders`.
-- **Bounded.** 40 deliveries per tick, a 4-minute delivery budget, 3 attempts then terminal `failed`. A stuck-claim sweep reclaims rows a dead worker abandoned; rows that died on their last attempt go terminal rather than being requeued into invisibility.
+- **Bounded.** 40 deliveries per tick, a 4-minute delivery budget, and a retry schedule that widens 1 → 3 → 7 days to a maximum of four attempts before terminal `failed`. Personal dates (birthday, anniversary) are never retried — late is worse than never — and no retry is scheduled past the occurrence date it is about. A stuck-claim sweep reclaims rows a dead worker abandoned; rows that died on their last attempt go terminal rather than being requeued into invisibility.
 - **`MAX_OVERDUE_DAYS = 7`** governs the mid-window case: an occurrence that is genuinely upcoming whose lead-time moment has already passed. Historical dates never reach this guard at all — a birthday from last month resolves to *next* year's occurrence. Seven days is chosen against the seeded rule spacing so a mid-window contact fires its **nearest** rule and not its earlier ones, and the import reports how many contacts land already inside their lead time so a burst is announced rather than a surprise.
 
 Correctness details worth preserving:

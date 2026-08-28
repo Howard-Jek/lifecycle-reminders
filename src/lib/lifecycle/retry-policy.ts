@@ -21,7 +21,7 @@
  */
 
 import { isPolicyLike } from "./event-types"
-import { todayInTimezone } from "./occurrence"
+import { addDays, todayInTimezone } from "./occurrence"
 
 /**
  * Days to wait before each successive retry, indexed by attempts already burnt:
@@ -84,20 +84,33 @@ export function planRetry(input: {
   const inDays = RETRY_BACKOFF_DAYS[attemptsBurnt - 1]
   if (inDays === undefined) return { retry: false, reason: "attempts-exhausted" }
 
-  const next = new Date(now.getTime() + inDays * 86_400_000)
-
   /**
-   * Compared as CALENDAR DATES in the business's own timezone.
+   * The deadline is a CALENDAR question, so it is answered with calendar
+   * arithmetic — `addDays` on the local date, not milliseconds on the clock.
    *
-   * `occurrence_date` is a bare date carrying no zone, and it means a date in
-   * the agency's calendar — so the retry instant has to be resolved into that
-   * calendar before the comparison. Comparing UTC instants instead would, at
-   * +08:00, wave through a retry that is already the following day in
-   * Singapore: late by the only clock the client reads.
+   * Adding `inDays * 86_400_000` and reading the date back off the result is
+   * wrong twice a year. At 23:30 on the night before a spring-forward, 24 hours
+   * later is 00:30 TWO local dates on, because the skipped hour pushes it past
+   * midnight: a policy expiring tomorrow would be refused as "past-occurrence"
+   * when its retry was in fact due the same day. A fall-back does the reverse
+   * and lands back on the date it started from.
+   *
+   * The comparison happens in the business's own timezone because
+   * `occurrence_date` is a bare date carrying no zone — it means a date in the
+   * agency's calendar. Comparing UTC would, at +08:00, wave through a retry
+   * already a day late in Singapore.
    */
-  if (todayInTimezone(next, timezone) > occurrenceDate) {
+  const targetDate = addDays(todayInTimezone(now, timezone), inDays)
+  if (targetDate > occurrenceDate) {
     return { retry: false, reason: "past-occurrence" }
   }
 
+  /**
+   * The stored instant stays simple millisecond arithmetic. It is a "wait at
+   * least this long" floor, not a calendar appointment, and being an hour out
+   * across a DST boundary is immaterial to a tick that runs every 15 minutes.
+   * The DECISION above is the part that must not drift, and it no longer does.
+   */
+  const next = new Date(now.getTime() + inDays * 86_400_000)
   return { retry: true, nextAttemptAt: next.toISOString(), inDays }
 }

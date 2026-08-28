@@ -12,6 +12,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import type { ReminderStatus } from "./types"
+import { MAX_ATTEMPTS } from "./retry-policy"
 
 /**
  * Try to take ownership of a reminder. True = this run owns it and must resolve
@@ -155,7 +156,10 @@ export async function markReminderSent(
 export async function requeueStuckClaims(
   admin: SupabaseClient,
   olderThanMinutes = 30,
-  maxAttempts = 3,
+  // Derived, not a second copy. This default was 3 while the delivery query
+  // capped at 4: only the fact that runReminderCycle passes the value
+  // explicitly kept the two from disagreeing, which is not a guarantee.
+  maxAttempts = MAX_ATTEMPTS,
 ): Promise<number> {
   const cutoff = new Date(Date.now() - olderThanMinutes * 60_000).toISOString()
 

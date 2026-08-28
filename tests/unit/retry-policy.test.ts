@@ -137,6 +137,63 @@ describe("nothing retries past the date it is about", () => {
   })
 })
 
+describe("daylight saving", () => {
+  /**
+   * These are the cases that made the millisecond version wrong. A day is a
+   * calendar step, not 86,400,000 milliseconds, and twice a year those differ.
+   */
+
+  it("does not lose a day to a spring-forward", () => {
+    // 2026-03-07 23:30 in New York. Twenty-four hours later is 2026-03-09
+    // 00:30 local — two dates on — because the spring-forward hour is skipped.
+    // The retry is due on the 8th, which is exactly when the policy expires,
+    // so it must be allowed.
+    expect(
+      plan({
+        now: new Date("2026-03-08T04:30:00Z"),
+        occurrenceDate: "2026-03-08",
+        timezone: "America/New_York",
+      }),
+    ).toMatchObject({ retry: true, inDays: 1 })
+  })
+
+  it("does not lose a day in the southern hemisphere either", () => {
+    // Auckland springs forward on 2026-09-27; same trap, opposite season.
+    expect(
+      plan({
+        now: new Date("2026-09-26T11:30:00Z"),
+        occurrenceDate: "2026-09-27",
+        timezone: "Pacific/Auckland",
+      }),
+    ).toMatchObject({ retry: true, inDays: 1 })
+  })
+
+  it("still advances a full day across a fall-back", () => {
+    // 2026-11-01 00:30 EDT + 24h is 23:30 the SAME local date, because an hour
+    // repeats. A one-day retry must still mean the 2nd, not the 1st.
+    expect(
+      plan({
+        now: new Date("2026-11-01T04:30:00Z"),
+        occurrenceDate: "2026-11-01",
+        timezone: "America/New_York",
+      }),
+    ).toEqual({ retry: false, reason: "past-occurrence" })
+    expect(
+      plan({
+        now: new Date("2026-11-01T04:30:00Z"),
+        occurrenceDate: "2026-11-02",
+        timezone: "America/New_York",
+      }),
+    ).toMatchObject({ retry: true, inDays: 1 })
+  })
+
+  it("carries a 7-day backoff over a month boundary", () => {
+    expect(
+      plan({ attemptsBurnt: 3, now: new Date("2026-10-29T04:30:00Z"), occurrenceDate: "2026-11-05" }),
+    ).toMatchObject({ retry: true, inDays: 7 })
+  })
+})
+
 describe("describeGiveUp", () => {
   it("gives each refusal a reason an operator can act on", () => {
     expect(describeGiveUp("not-retryable")).toMatch(/personal date/i)
