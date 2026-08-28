@@ -45,7 +45,7 @@ cp .env.example .env.local   # fill it in
 npm run dev
 ```
 
-Apply all three migrations to a fresh Supabase project (`supabase/migrations/`, in filename order), then sign up — the first authenticated request mints your business. Only the middle one ever goes to GomaAI; see [Integration](#integration).
+Apply every migration to a fresh Supabase project (`supabase/migrations/`, in filename order), then sign up — the first authenticated request mints your business. Only the two that define and extend the add-on's own tables ever go to GomaAI; see [Integration](#integration).
 
 | Command | |
 |---|---|
