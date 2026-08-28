@@ -5,6 +5,7 @@ import {
   RETRY_BACKOFF_DAYS,
   MAX_ATTEMPTS,
 } from "@/lib/lifecycle/retry-policy"
+import { addDays, todayInTimezone } from "@/lib/lifecycle/occurrence"
 
 /**
  * The two rules this module exists to enforce are both REFUSALS — a birthday
@@ -19,6 +20,19 @@ const POLICY = "policy_expiry"
 /** Far enough out that the occurrence deadline never interferes. */
 const FAR = "2027-01-01"
 const NOW = new Date("2026-09-01T02:00:00Z")
+
+/**
+ * The local calendar date the returned instant actually resolves to.
+ *
+ * Asserting `inDays` alone is what let the millisecond bug through: the plan
+ * SAID one day and the instant it handed back landed on another. What the
+ * delivery query gates on is the instant, so the instant is what has to be
+ * checked.
+ */
+const landsOn = (p: ReturnType<typeof planRetry>, timezone: string): string => {
+  if (!p.retry) throw new Error(`expected a retry, got ${p.reason}`)
+  return todayInTimezone(new Date(p.nextAttemptAt), timezone)
+}
 
 const plan = (over: Partial<Parameters<typeof planRetry>[0]> = {}) =>
   planRetry({
@@ -42,11 +56,18 @@ describe("the schedule", () => {
     expect(plan({ attemptsBurnt: 99 })).toEqual({ retry: false, reason: "attempts-exhausted" })
   })
 
-  it("returns an instant the delivery query can compare against", () => {
+  it("returns an instant on the target DATE, not a duration from now", () => {
     const p = plan({ attemptsBurnt: 1 })
     if (!p.retry) throw new Error("expected a retry")
-    // One day after NOW, to the millisecond — not "tomorrow at midnight".
-    expect(p.nextAttemptAt).toBe(new Date("2026-09-02T02:00:00Z").toISOString())
+    // The schedule is day-granular: "in 1 day" names tomorrow's date in the
+    // business's calendar, and the instant has to fall on it. Which hour is
+    // deliberately unspecified — the tick runs every fifteen minutes, and
+    // pinning a clock time without a timezone library would be a fiction.
+    expect(landsOn(p, SGT)).toBe(addDays(todayInTimezone(NOW, SGT), 1))
+    expect(landsOn(p, SGT)).toBe("2026-09-02")
+    // Still a valid instant the delivery query can compare with .lte.
+    expect(new Date(p.nextAttemptAt).toISOString()).toBe(p.nextAttemptAt)
+    expect(new Date(p.nextAttemptAt).getTime()).toBeGreaterThan(NOW.getTime())
   })
 
   it("keeps MAX_ATTEMPTS derived from the backoff, never typed twice", () => {
@@ -148,24 +169,26 @@ describe("daylight saving", () => {
     // 00:30 local — two dates on — because the spring-forward hour is skipped.
     // The retry is due on the 8th, which is exactly when the policy expires,
     // so it must be allowed.
-    expect(
-      plan({
-        now: new Date("2026-03-08T04:30:00Z"),
-        occurrenceDate: "2026-03-08",
-        timezone: "America/New_York",
-      }),
-    ).toMatchObject({ retry: true, inDays: 1 })
+    const p = plan({
+      now: new Date("2026-03-08T04:30:00Z"),
+      occurrenceDate: "2026-03-08",
+      timezone: "America/New_York",
+    })
+    expect(p).toMatchObject({ retry: true, inDays: 1 })
+    // And it must LAND on the 8th. now + 24h resolves to the 9th locally —
+    // approving one date and scheduling the next is the bug this pins.
+    expect(landsOn(p, "America/New_York")).toBe("2026-03-08")
   })
 
   it("does not lose a day in the southern hemisphere either", () => {
     // Auckland springs forward on 2026-09-27; same trap, opposite season.
-    expect(
-      plan({
-        now: new Date("2026-09-26T11:30:00Z"),
-        occurrenceDate: "2026-09-27",
-        timezone: "Pacific/Auckland",
-      }),
-    ).toMatchObject({ retry: true, inDays: 1 })
+    const p = plan({
+      now: new Date("2026-09-26T11:30:00Z"),
+      occurrenceDate: "2026-09-27",
+      timezone: "Pacific/Auckland",
+    })
+    expect(p).toMatchObject({ retry: true, inDays: 1 })
+    expect(landsOn(p, "Pacific/Auckland")).toBe("2026-09-27")
   })
 
   it("still advances a full day across a fall-back", () => {
@@ -178,19 +201,66 @@ describe("daylight saving", () => {
         timezone: "America/New_York",
       }),
     ).toEqual({ retry: false, reason: "past-occurrence" })
-    expect(
-      plan({
-        now: new Date("2026-11-01T04:30:00Z"),
-        occurrenceDate: "2026-11-02",
-        timezone: "America/New_York",
-      }),
-    ).toMatchObject({ retry: true, inDays: 1 })
+    const p = plan({
+      now: new Date("2026-11-01T04:30:00Z"),
+      occurrenceDate: "2026-11-02",
+      timezone: "America/New_York",
+    })
+    expect(p).toMatchObject({ retry: true, inDays: 1 })
+    // now + 24h is 23:30 on the 1st — the very date the line above refuses.
+    expect(landsOn(p, "America/New_York")).toBe("2026-11-02")
   })
 
   it("carries a 7-day backoff over a month boundary", () => {
     expect(
       plan({ attemptsBurnt: 3, now: new Date("2026-10-29T04:30:00Z"), occurrenceDate: "2026-11-05" }),
     ).toMatchObject({ retry: true, inDays: 7 })
+  })
+})
+
+describe("the instant always matches the date that was approved", () => {
+  /**
+   * One invariant, swept across both DST directions, both hemispheres and every
+   * backoff step: whatever planRetry approves on the calendar is where the
+   * stored instant lands. Any future change to how the instant is computed has
+   * to keep this true, whether or not anyone remembers the spring-forward case.
+   */
+  const ZONES = ["America/New_York", "Pacific/Auckland", "Asia/Singapore", "Europe/London", "UTC"]
+  const INSTANTS = [
+    "2026-03-08T04:30:00Z", // US spring-forward
+    "2026-11-01T04:30:00Z", // US fall-back
+    "2026-09-26T11:30:00Z", // NZ spring-forward
+    "2026-04-04T15:30:00Z", // NZ fall-back
+    "2026-03-29T00:30:00Z", // EU spring-forward
+    "2026-06-15T12:00:00Z", // an ordinary day
+    "2026-12-31T16:00:00Z", // year boundary
+  ]
+
+  it("lands on addDays(today, inDays) in the business timezone, never past the occurrence", () => {
+    let checked = 0
+    for (const timezone of ZONES) {
+      for (const iso of INSTANTS) {
+        for (const attemptsBurnt of [1, 2, 3]) {
+          const now = new Date(iso)
+          const p = planRetry({
+            eventType: POLICY,
+            attemptsBurnt,
+            // Far past every instant in the sweep, including the 7-day step
+            // from the year-boundary case. FAR is not enough for that one.
+            occurrenceDate: "2030-01-01",
+            now,
+            timezone,
+          })
+          if (!p.retry) throw new Error(`unexpected refusal: ${p.reason}`)
+          const expected = addDays(todayInTimezone(now, timezone), p.inDays)
+          expect(landsOn(p, timezone)).toBe(expected)
+          expect(landsOn(p, timezone) <= "2030-01-01").toBe(true)
+          checked++
+        }
+      }
+    }
+    // Guard the guard: a typo in the loops that checked nothing would pass.
+    expect(checked).toBe(ZONES.length * INSTANTS.length * 3)
   })
 })
 

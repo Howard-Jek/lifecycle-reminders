@@ -21,7 +21,7 @@
  */
 
 import { isPolicyLike } from "./event-types"
-import { addDays, todayInTimezone } from "./occurrence"
+import { addDays, daysBetween, todayInTimezone } from "./occurrence"
 
 /**
  * Days to wait before each successive retry, indexed by attempts already burnt:
@@ -105,12 +105,39 @@ export function planRetry(input: {
     return { retry: false, reason: "past-occurrence" }
   }
 
-  /**
-   * The stored instant stays simple millisecond arithmetic. It is a "wait at
-   * least this long" floor, not a calendar appointment, and being an hour out
-   * across a DST boundary is immaterial to a tick that runs every 15 minutes.
-   * The DECISION above is the part that must not drift, and it no longer does.
-   */
-  const next = new Date(now.getTime() + inDays * 86_400_000)
-  return { retry: true, nextAttemptAt: next.toISOString(), inDays }
+  return {
+    retry: true,
+    nextAttemptAt: instantOnLocalDate(targetDate, timezone).toISOString(),
+    inDays,
+  }
+}
+
+/**
+ * An instant that falls on `targetDate` in the business's timezone.
+ *
+ * The schedule is DAY-GRANULAR — "next attempt in 3 days" names a date, not a
+ * time — so this guarantees the calendar date and lets the time of day fall
+ * where it may. The tick runs every fifteen minutes; which hour of the target
+ * date the row becomes eligible does not matter, and pretending to control it
+ * without a timezone library would be a lie with arithmetic on top.
+ *
+ * Preserving the ORIGINAL time of day is what cannot be done here, and the
+ * attempt to is what broke: from 23:30 local, every whole-day step in
+ * milliseconds lands on either the day before or the day after a
+ * spring-forward, oscillating and never touching the date in between.
+ *
+ * So the anchor is 12:00 UTC on the target date, corrected onto the intended
+ * local date. Noon is chosen because every real UTC offset (-12 to +14) leaves
+ * it within one day of the target, so a single whole-day correction always
+ * converges — and because it is nowhere near the 02:00-03:00 window where DST
+ * transitions delete or repeat an hour.
+ */
+function instantOnLocalDate(targetDate: string, timezone: string): Date {
+  let candidate = new Date(`${targetDate}T12:00:00Z`)
+  for (let correction = 0; correction < 3; correction++) {
+    const drift = daysBetween(todayInTimezone(candidate, timezone), targetDate)
+    if (drift === 0) break
+    candidate = new Date(candidate.getTime() + drift * 86_400_000)
+  }
+  return candidate
 }
