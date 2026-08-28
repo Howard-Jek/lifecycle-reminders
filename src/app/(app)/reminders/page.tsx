@@ -68,12 +68,15 @@ type ReminderRow = {
  * "in 3 days" beats a timestamp here. The operator's question is whether to
  * wait or to act now, and a date makes them do the subtraction.
  *
- * A non-positive number means the wait has already elapsed and the row is
- * simply waiting for the next tick — which is the truth, and better said than
- * rendered as "in 0 days".
+ * `due` is separate from the day count on purpose. The scheduled instant sits
+ * at midday, so on the target date itself the count is already 0 while the
+ * delivery query still excludes the row for several more hours. Saying "on the
+ * next run" then is a promise the engine will not keep — up to nineteen hours
+ * early for a Singapore tenant. Only the instant can tell those apart.
  */
-function describeNextAttempt(inDays: number): string {
-  if (inDays <= 0) return "Next attempt on the next run"
+function describeNextAttempt(inDays: number, due: boolean): string {
+  if (due) return "Next attempt on the next run"
+  if (inDays <= 0) return "Next attempt later today"
   if (inDays === 1) return "Next attempt tomorrow"
   return `Next attempt in ${inDays} days`
 }
@@ -234,6 +237,10 @@ export default async function RemindersPage({
   }
 
   const nowIso = new Date().toISOString()
+  // Parsed once from the value above rather than read again per row: Date.now()
+  // during render is impure, and two rows disagreeing about "now" would be a
+  // real if tiny inconsistency in the same list.
+  const nowMs = Date.parse(nowIso)
   if (tab === "due") {
     query = query
       .eq("status", "queued")
@@ -483,6 +490,13 @@ export default async function RemindersPage({
                 retrying && row.next_attempt_at
                   ? daysBetween(today, todayInTimezone(new Date(row.next_attempt_at), timezone))
                   : null
+              // Separate from the day count: the scheduled instant sits at
+              // midday, so on the target date itself the count reaches 0 hours
+              // before the delivery query will actually take the row.
+              const retryDueNow =
+                retrying && row.next_attempt_at
+                  ? Date.parse(row.next_attempt_at) <= nowMs
+                  : false
               /**
                * The ceiling the DEADLINE allows, not the one the backoff array
                * allows. "of 4" was only ever true for a reminder with a long
@@ -560,7 +574,7 @@ export default async function RemindersPage({
                       <span className="tabular-nums">
                         {retryInDays === null
                           ? "Waiting for the next run"
-                          : describeNextAttempt(retryInDays)}
+                          : describeNextAttempt(retryInDays, retryDueNow)}
                       </span>
                       {retryCeiling !== null && (
                         <span className="text-muted-foreground">
