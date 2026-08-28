@@ -5,6 +5,7 @@ import {
   fetchPhoneNumberStatus,
   fetchSubscribedApps,
   fetchAppSubscriptions,
+  fetchAccountStatus,
 } from "@/lib/notify/template-admin"
 
 /**
@@ -41,10 +42,11 @@ export async function GET(request: Request) {
     // other's problem.
     const appId = process.env.GOMA_NOTIFY_APP_ID?.trim()
     const appSecret = process.env.GOMA_NOTIFY_APP_SECRET?.trim()
-    const [status, subs, appSubs] = await Promise.all([
+    const [status, subs, appSubs, account] = await Promise.all([
       fetchPhoneNumberStatus(accessToken, phoneNumberId),
       wabaId ? fetchSubscribedApps(accessToken, wabaId) : Promise.resolve(null),
       appId && appSecret ? fetchAppSubscriptions(appId, appSecret) : Promise.resolve(null),
+      wabaId ? fetchAccountStatus(accessToken, wabaId) : Promise.resolve(null),
     ])
     if (!status.ok) return ok({ configured: true, ok: false, detail: status.error })
 
@@ -58,6 +60,20 @@ export async function GET(request: Request) {
       verified_name: status.verifiedName,
       name_status: status.nameStatus,
       new_name_status: status.newNameStatus,
+      code_verification_status: status.codeVerificationStatus,
+      messaging_limit_tier: status.messagingLimitTier,
+      throughput_level: status.throughputLevel,
+      // The account above the number. Restrictions here are invisible at the
+      // number level and produce the same accepted-then-silent symptom.
+      account: account && account.ok
+        ? {
+            name: account.name,
+            review_status: account.accountReviewStatus,
+            business_verification: account.businessVerificationStatus,
+            status: account.status,
+          }
+        : null,
+      account_error: account && !account.ok ? account.error : null,
       status: status.status,
       platform_type: status.platformType,
       quality_rating: status.qualityRating,

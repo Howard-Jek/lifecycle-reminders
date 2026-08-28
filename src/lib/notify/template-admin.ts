@@ -274,6 +274,11 @@ export type PhoneNumberStatus =
        * never happened. This is the only field that shows it did.
        */
       newNameStatus: string | null
+      /** VERIFIED once the number completed Meta's OTP. */
+      codeVerificationStatus: string | null
+      /** How many unique recipients this number may message per day. */
+      messagingLimitTier: string | null
+      throughputLevel: string | null
       /** CONNECTED once registration is complete. */
       status: string | null
       /** CLOUD_API when registered for the Cloud API; NOT_APPLICABLE when not. */
@@ -290,7 +295,8 @@ export async function fetchPhoneNumberStatus(
 ): Promise<PhoneNumberStatus> {
   const url =
     `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}` +
-    `?fields=display_phone_number,verified_name,name_status,new_name_status,status,platform_type,quality_rating`
+    `?fields=display_phone_number,verified_name,name_status,new_name_status,status,platform_type,` +
+    `quality_rating,code_verification_status,throughput,messaging_limit_tier,is_official_business_account`
 
   let res: Response
   try {
@@ -305,6 +311,9 @@ export async function fetchPhoneNumberStatus(
         verified_name?: string
         name_status?: string
         new_name_status?: string
+        code_verification_status?: string
+        messaging_limit_tier?: string
+        throughput?: { level?: string }
         status?: string
         platform_type?: string
         quality_rating?: string
@@ -324,6 +333,9 @@ export async function fetchPhoneNumberStatus(
     verifiedName: data?.verified_name ?? null,
     nameStatus,
     newNameStatus,
+    codeVerificationStatus: data?.code_verification_status ?? null,
+    messagingLimitTier: data?.messaging_limit_tier ?? null,
+    throughputLevel: data?.throughput?.level ?? null,
     status,
     platformType,
     qualityRating: data?.quality_rating ?? null,
@@ -514,5 +526,61 @@ export async function fetchAppSubscriptions(
       .map((f) => (typeof f === "string" ? f : (f.name ?? "")))
       .filter(Boolean),
     callbackUrl: whatsapp.callback_url ?? null,
+  }
+}
+
+
+/**
+ * The WABA itself, which is a layer above the phone number and fails on its
+ * own terms.
+ *
+ * Worth asking separately because a number can be CONNECTED, registered and
+ * verified while the ACCOUNT it belongs to is unverified or under review — and
+ * an account in that state has messaging restrictions that produce exactly the
+ * shape we keep seeing: sends accepted, message ids returned, nothing
+ * delivered, nothing reported.
+ */
+export type AccountStatus =
+  | {
+      ok: true
+      name: string | null
+      /** APPROVED / PENDING / REJECTED. */
+      accountReviewStatus: string | null
+      businessVerificationStatus: string | null
+      /** Set when Meta has restricted the account. */
+      status: string | null
+    }
+  | { ok: false; error: string }
+
+export async function fetchAccountStatus(
+  accessToken: string,
+  wabaId: string,
+): Promise<AccountStatus> {
+  let res: Response
+  try {
+    res = await fetch(
+      `https://graph.facebook.com/${GRAPH_API_VERSION}/${wabaId}` +
+        `?fields=name,account_review_status,business_verification_status,status`,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    )
+  } catch (e) {
+    return { ok: false, error: `could not reach graph.facebook.com — ${(e as Error).message}` }
+  }
+  const data = (await res.json().catch(() => null)) as
+    | {
+        name?: string
+        account_review_status?: string
+        business_verification_status?: string
+        status?: string
+        error?: GraphError
+      }
+    | null
+  if (!res.ok) return { ok: false, error: describeGraphError(data?.error, res.status) }
+  return {
+    ok: true,
+    name: data?.name ?? null,
+    accountReviewStatus: data?.account_review_status ?? null,
+    businessVerificationStatus: data?.business_verification_status ?? null,
+    status: data?.status ?? null,
   }
 }
