@@ -37,6 +37,16 @@ export type InboundMessage = {
 export type WebhookBatch = {
   statuses: StatusEvent[]
   messages: InboundMessage[]
+  /**
+   * Entries dropped because they were about another number or account.
+   *
+   * Reported rather than merely discarded, because the scope check has a
+   * failure mode that is otherwise indistinguishable from success: if
+   * GOMA_NOTIFY_WABA_ID does not hold exactly what Meta puts in `entry.id`,
+   * EVERY real payload is dropped and the symptom is silence — which reads as
+   * "Meta never sends anything" rather than "we are refusing all of it".
+   */
+  skipped: { wabaMismatch: number; phoneMismatch: number }
 }
 
 function asArray(value: unknown): unknown[] {
@@ -123,12 +133,13 @@ export type WebhookScope = {
 export function parseWebhookBatch(payload: unknown, scope: WebhookScope = {}): WebhookBatch {
   const statuses: StatusEvent[] = []
   const messages: InboundMessage[] = []
+  const skipped = { wabaMismatch: 0, phoneMismatch: 0 }
 
   const root = asRecord(payload)
   // Meta sends `object: "whatsapp_business_account"`. Other Meta products post
   // to the same webhook shape, and acting on a Page or Instagram payload here
   // would be acting on something this app knows nothing about.
-  if (asString(root.object) !== "whatsapp_business_account") return { statuses, messages }
+  if (asString(root.object) !== "whatsapp_business_account") return { statuses, messages, skipped }
 
   const expectedPhone = scope.phoneNumberId?.trim()
   const expectedWaba = scope.wabaId?.trim()
@@ -152,7 +163,10 @@ export function parseWebhookBatch(payload: unknown, scope: WebhookScope = {}): W
      * bodies and phone numbers — into whatsapp_inbound_messages, a table whose
      * entire purpose is agent replies to one number.
      */
-    if (expectedWaba && asString(entry.id) && asString(entry.id) !== expectedWaba) continue
+    if (expectedWaba && asString(entry.id) && asString(entry.id) !== expectedWaba) {
+      skipped.wabaMismatch += 1
+      continue
+    }
 
     for (const changeRaw of asArray(entry.changes)) {
       const change = asRecord(changeRaw)
@@ -164,7 +178,10 @@ export function parseWebhookBatch(payload: unknown, scope: WebhookScope = {}): W
         // A payload with no metadata at all is let through: Meta omits it on
         // some event shapes, and dropping those would lose real receipts to
         // guard against a case the WABA check above already covers.
-        if (from && from !== expectedPhone) continue
+        if (from && from !== expectedPhone) {
+          skipped.phoneMismatch += 1
+          continue
+        }
       }
 
       for (const raw of asArray(value.statuses)) {
@@ -196,7 +213,7 @@ export function parseWebhookBatch(payload: unknown, scope: WebhookScope = {}): W
     }
   }
 
-  return { statuses, messages }
+  return { statuses, messages, skipped }
 }
 
 /** A roster row, reduced to what sender attribution needs. */

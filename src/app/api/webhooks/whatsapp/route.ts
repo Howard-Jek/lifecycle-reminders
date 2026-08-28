@@ -80,10 +80,21 @@ export async function POST(request: Request) {
   }
 
   // Scoped to OUR number, not merely to our Meta App — see parseWebhookBatch.
-  const { statuses, messages } = parseWebhookBatch(payload, {
+  const { statuses, messages, skipped } = parseWebhookBatch(payload, {
     phoneNumberId: process.env.GOMA_NOTIFY_PHONE_NUMBER_ID,
     wabaId: process.env.GOMA_NOTIFY_WABA_ID,
   })
+
+  // A scope mismatch is either the guard doing its job or the guard eating
+  // everything, and those look identical from the outside — silence. Logged and
+  // returned so the difference is one curl away instead of a mystery.
+  if (skipped.wabaMismatch > 0 || skipped.phoneMismatch > 0) {
+    console.warn(
+      `[whatsapp-webhook] ignored ${skipped.wabaMismatch} entr(ies) for another WABA and ` +
+        `${skipped.phoneMismatch} change(s) for another number. If this is EVERY payload, ` +
+        `GOMA_NOTIFY_WABA_ID / GOMA_NOTIFY_PHONE_NUMBER_ID do not match what Meta sends.`,
+    )
+  }
 
   try {
     const admin = createAdminClient()
@@ -91,7 +102,7 @@ export async function POST(request: Request) {
       recordFailedSends(admin, statuses),
       storeInboundMessages(admin, messages),
     ])
-    return NextResponse.json({ ok: true, statuses: statuses.length, failed, stored })
+    return NextResponse.json({ ok: true, statuses: statuses.length, failed, stored, skipped })
   } catch (err) {
     // 500 so Meta RETRIES. The alternative — swallow it and answer 200 — loses
     // the payload permanently, because there is no way to ask Meta for it

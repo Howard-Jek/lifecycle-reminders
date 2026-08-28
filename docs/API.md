@@ -236,6 +236,41 @@ than one member is refused rather than guessed — pass `member_id` to disambigu
 A send that Meta rejects comes back with the template's current state appended, because
 `#132001` means "not submitted", "still pending" and "wrong language" indistinguishably.
 
+### `GET /api/v1/whatsapp`
+
+Which number this deployment sends FROM, and whether Meta will let it.
+
+```json
+{ "ok": true, "phone_number_id": "1276137728921819",
+  "display_phone_number": "+1 951-456-4463", "verified_name": "Howard Test",
+  "status": "PENDING", "platform_type": "NOT_APPLICABLE", "registered": false }
+```
+
+Branch on **`registered`**. It is `status === "CONNECTED" && platform_type === "CLOUD_API"`,
+because either signal alone has been misleading — a number can read `CONNECTED` while
+`platform_type` says `NOT_APPLICABLE`, which is exactly the shape of one added to a WABA but
+never registered.
+
+`display_phone_number` comes from Meta rather than from configuration. There was briefly an
+env var holding it, and it was wrong within a day.
+
+### `POST /api/v1/whatsapp/register`
+
+Clears `#133010 Account not registered` — the error that stops every send.
+
+```json
+{ "pin": "123456" }
+```
+
+Six digits, the number's two-step verification PIN. **If two-step was never enabled this call
+SETS the PIN**; if it was, the value must match. Meta rate-limits wrong attempts and will lock
+registration for a period, so get the PIN from whoever set the number up rather than guessing.
+
+Registration is separate from adding a number to a WABA, which is why a number can look
+perfectly healthy in the dashboard and still refuse everything. A `200` here means Meta
+accepted the request, not that the number is `CONNECTED` yet — the response re-reads the
+status, and `ready_to_send` is the field to poll.
+
 ### `POST /api/webhooks/whatsapp` — not part of v1
 
 Meta's callback. **No bearer token**; it authenticates by `X-Hub-Signature-256`, an HMAC of the

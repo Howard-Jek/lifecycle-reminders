@@ -238,3 +238,226 @@ export function describeState(status: Extract<TemplateStatus, { ok: true }>): {
       }
   }
 }
+
+
+/**
+ * The state of the number we send FROM.
+ *
+ * Exists because "#133010 Account not registered" names a condition without
+ * naming its subject, and the natural reading is the wrong one: it sounds like
+ * the RECIPIENT is not registered. Recipients register nothing — anyone with
+ * WhatsApp can receive a business template. It is the SENDING number that must
+ * complete Cloud API registration, and that is a step separate from adding the
+ * number to a WABA, which is why a number can look perfectly healthy in the
+ * dashboard and still refuse every send.
+ */
+export type PhoneNumberStatus =
+  | {
+      ok: true
+      /** The dialable number, so you can see WHICH number this deployment uses. */
+      displayPhoneNumber: string | null
+      verifiedName: string | null
+      /**
+       * The DISPLAY NAME's review state, which is not the number's state and
+       * fails independently of it. APPROVED / AVAILABLE_WITHOUT_REVIEW are fine;
+       * DECLINED means Meta rejected the name and the number's ability to send
+       * is restricted while it stands — with no error at send time, because the
+       * Graph call still returns a message id.
+       */
+      nameStatus: string | null
+      /**
+       * The review state of a NEWLY SUBMITTED display name.
+       *
+       * Meta keeps the old name in verified_name until a replacement is
+       * approved, so after submitting a new one the number still reports the
+       * rejected name and DECLINED — which reads exactly like the submission
+       * never happened. This is the only field that shows it did.
+       */
+      newNameStatus: string | null
+      /** CONNECTED once registration is complete. */
+      status: string | null
+      /** CLOUD_API when registered for the Cloud API; NOT_APPLICABLE when not. */
+      platformType: string | null
+      qualityRating: string | null
+      /** True when Meta reports it as usable for Cloud API sends. */
+      registered: boolean
+    }
+  | { ok: false; error: string }
+
+export async function fetchPhoneNumberStatus(
+  accessToken: string,
+  phoneNumberId: string,
+): Promise<PhoneNumberStatus> {
+  const url =
+    `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}` +
+    `?fields=display_phone_number,verified_name,name_status,new_name_status,status,platform_type,quality_rating`
+
+  let res: Response
+  try {
+    res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } })
+  } catch (e) {
+    return { ok: false, error: `could not reach graph.facebook.com — ${(e as Error).message}` }
+  }
+
+  const data = (await res.json().catch(() => null)) as
+    | {
+        display_phone_number?: string
+        verified_name?: string
+        name_status?: string
+        new_name_status?: string
+        status?: string
+        platform_type?: string
+        quality_rating?: string
+        error?: GraphError
+      }
+    | null
+
+  if (!res.ok) return { ok: false, error: describeGraphError(data?.error, res.status) }
+
+  const status = data?.status ?? null
+  const platformType = data?.platform_type ?? null
+  const nameStatus = data?.name_status ?? null
+  const newNameStatus = data?.new_name_status ?? null
+  return {
+    ok: true,
+    displayPhoneNumber: data?.display_phone_number ?? null,
+    verifiedName: data?.verified_name ?? null,
+    nameStatus,
+    newNameStatus,
+    status,
+    platformType,
+    qualityRating: data?.quality_rating ?? null,
+    // THREE signals, because each fails independently and none of them is
+    // visible at send time. A number can read CONNECTED (registered) with
+    // platform_type CLOUD_API (on the right platform) and still deliver
+    // nothing, because its DISPLAY NAME was declined — Meta restricts sending
+    // on a rejected name while the Graph call goes on returning message ids.
+    // Leaving name_status out of this is what turned a one-field answer into an
+    // afternoon of guessing.
+    registered:
+      status === "CONNECTED" &&
+      platformType === "CLOUD_API" &&
+      nameStatus !== "DECLINED" &&
+      nameStatus !== "PENDING_REVIEW",
+  }
+}
+
+export type RegisterResult = { ok: true } | { ok: false; error: string }
+
+/**
+ * Register the sending number for the Cloud API.
+ *
+ * The step that clears "#133010 Account not registered", and it is separate
+ * from adding the number to a WABA — which is why a number can sit in the
+ * dashboard looking healthy and still refuse every send.
+ *
+ * The PIN is the number's six-digit two-step verification PIN. If two-step was
+ * never enabled, this call SETS it to whatever is passed; if it was, the value
+ * must match. Meta rate-limits wrong attempts and will lock registration for a
+ * period, so this is not something to brute force — get the PIN from whoever
+ * set it up rather than guessing.
+ */
+export async function registerPhoneNumber(
+  accessToken: string,
+  phoneNumberId: string,
+  pin: string,
+): Promise<RegisterResult> {
+  let res: Response
+  try {
+    res = await fetch(
+      `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/register`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ messaging_product: "whatsapp", pin }),
+      },
+    )
+  } catch (e) {
+    return { ok: false, error: `could not reach graph.facebook.com — ${(e as Error).message}` }
+  }
+
+  const data = (await res.json().catch(() => null)) as
+    | { success?: boolean; error?: GraphError }
+    | null
+
+  if (!res.ok) return { ok: false, error: describeGraphError(data?.error, res.status) }
+  return { ok: true }
+}
+
+
+/**
+ * Which apps are subscribed to this WABA's webhooks.
+ *
+ * Verifying the callback URL and SUBSCRIBING to webhook fields are two
+ * different actions in Meta's dashboard, and the first is the one that gives
+ * you a satisfying green tick. An app can therefore pass the handshake, show a
+ * verified URL, and receive nothing at all — for ever, silently, because a
+ * webhook that is not subscribed produces no error and no traffic.
+ *
+ * Worth checking whenever the symptom is "we never hear anything back".
+ */
+export type SubscriptionStatus =
+  | { ok: true; subscribedApps: Array<{ id: string | null; name: string | null }> }
+  | { ok: false; error: string }
+
+export async function fetchSubscribedApps(
+  accessToken: string,
+  wabaId: string,
+): Promise<SubscriptionStatus> {
+  let res: Response
+  try {
+    res = await fetch(
+      `https://graph.facebook.com/${GRAPH_API_VERSION}/${wabaId}/subscribed_apps`,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    )
+  } catch (e) {
+    return { ok: false, error: `could not reach graph.facebook.com — ${(e as Error).message}` }
+  }
+  const data = (await res.json().catch(() => null)) as
+    | { data?: Array<{ whatsapp_business_api_data?: { id?: string; name?: string } }>; error?: GraphError }
+    | null
+  if (!res.ok) return { ok: false, error: describeGraphError(data?.error, res.status) }
+  return {
+    ok: true,
+    subscribedApps: (data?.data ?? []).map((row) => ({
+      id: row.whatsapp_business_api_data?.id ?? null,
+      name: row.whatsapp_business_api_data?.name ?? null,
+    })),
+  }
+}
+
+
+/**
+ * Subscribe this app to the WABA's webhooks.
+ *
+ * The counterpart to fetchSubscribedApps: verifying the callback URL proves we
+ * own it, this is what actually turns the tap on. Without it Meta accepts every
+ * send, returns a real message id, and never reports what became of it — the
+ * message simply disappears, and so does every failure reason.
+ *
+ * Idempotent: subscribing an already-subscribed app succeeds and changes
+ * nothing, so it is safe to call whenever the diagnostic says the list is
+ * empty.
+ */
+export async function subscribeApp(
+  accessToken: string,
+  wabaId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  let res: Response
+  try {
+    res = await fetch(
+      `https://graph.facebook.com/${GRAPH_API_VERSION}/${wabaId}/subscribed_apps`,
+      { method: "POST", headers: { Authorization: `Bearer ${accessToken}` } },
+    )
+  } catch (e) {
+    return { ok: false, error: `could not reach graph.facebook.com — ${(e as Error).message}` }
+  }
+  const data = (await res.json().catch(() => null)) as
+    | { success?: boolean; error?: GraphError }
+    | null
+  if (!res.ok) return { ok: false, error: describeGraphError(data?.error, res.status) }
+  return { ok: true }
+}

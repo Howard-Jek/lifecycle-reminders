@@ -210,10 +210,9 @@ describe("parseWebhookBatch", () => {
   })
 
   it("ignores a payload for a different Meta product", () => {
-    expect(parseWebhookBatch({ object: "page", entry: [{ messaging: [{}] }] })).toEqual({
-      statuses: [],
-      messages: [],
-    })
+    const batch = parseWebhookBatch({ object: "page", entry: [{ messaging: [{}] }] })
+    expect(batch.statuses).toEqual([])
+    expect(batch.messages).toEqual([])
   })
 
   it("ignores non-message fields on the same subscription", () => {
@@ -237,7 +236,8 @@ describe("parseWebhookBatch", () => {
         messages: [{ id: "no-from", type: "text" }, { from: "65900", type: "text" }],
       }),
     )
-    expect(batch).toEqual({ statuses: [], messages: [] })
+    expect(batch.statuses).toEqual([])
+    expect(batch.messages).toEqual([])
   })
 })
 
@@ -394,12 +394,14 @@ describe("payloads are scoped to OUR number, not merely to our Meta App", () => 
     // — which .env.example says is the plan — every tenant's customer
     // conversations would otherwise land in whatsapp_inbound_messages.
     const batch = parseWebhookBatch(payload("200000000000002", "999999999999999"), OURS)
-    expect(batch).toEqual({ statuses: [], messages: [] })
+    expect(batch.statuses).toEqual([])
+    expect(batch.messages).toEqual([])
   })
 
   it("DROPS a payload about a different number on the same WABA", () => {
     const batch = parseWebhookBatch(payload(OURS.wabaId, "999999999999999"), OURS)
-    expect(batch).toEqual({ statuses: [], messages: [] })
+    expect(batch.statuses).toEqual([])
+    expect(batch.messages).toEqual([])
   })
 
   it("accepts everything when no scope is configured", () => {
@@ -426,5 +428,47 @@ describe("payloads are scoped to OUR number, not merely to our Meta App", () => 
       OURS,
     )
     expect(batch.statuses).toHaveLength(1)
+  })
+})
+
+describe("a scope mismatch is counted, not swallowed", () => {
+  const OURS = { phoneNumberId: "1276137728921819", wabaId: "100000000000001" }
+  const entry = (wabaId: string, phoneNumberId: string) => ({
+    object: "whatsapp_business_account",
+    entry: [
+      {
+        id: wabaId,
+        changes: [
+          {
+            field: "messages",
+            value: {
+              metadata: { phone_number_id: phoneNumberId },
+              statuses: [{ id: "w", status: "failed", errors: [{ code: 1 }] }],
+            },
+          },
+        ],
+      },
+    ],
+  })
+
+  it("counts a foreign WABA", () => {
+    // The failure this exists for: a misconfigured GOMA_NOTIFY_WABA_ID drops
+    // EVERY real payload, and the symptom — nothing ever processed — is
+    // indistinguishable from Meta not sending. A non-zero count here is what
+    // tells the two apart.
+    const b = parseWebhookBatch(entry("999", OURS.phoneNumberId), OURS)
+    expect(b.skipped).toEqual({ wabaMismatch: 1, phoneMismatch: 0 })
+    expect(b.statuses).toHaveLength(0)
+  })
+
+  it("counts a foreign number on our own WABA", () => {
+    const b = parseWebhookBatch(entry(OURS.wabaId, "999"), OURS)
+    expect(b.skipped).toEqual({ wabaMismatch: 0, phoneMismatch: 1 })
+  })
+
+  it("counts nothing when the payload is ours", () => {
+    const b = parseWebhookBatch(entry(OURS.wabaId, OURS.phoneNumberId), OURS)
+    expect(b.skipped).toEqual({ wabaMismatch: 0, phoneMismatch: 0 })
+    expect(b.statuses).toHaveLength(1)
   })
 })
