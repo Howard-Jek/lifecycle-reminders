@@ -21,8 +21,21 @@ import { join } from "node:path"
 const MIGRATIONS_DIR = "supabase/migrations"
 const OUT = "supabase/bundle.sql"
 
-/** The one migration that is meant to be applied to the host app. */
-const ADDON = "lifecycle_events"
+/**
+ * The migrations meant to be applied to the host app: the add-on's own tables,
+ * plus everything that later ALTERS them.
+ *
+ * A list rather than one substring because the original assumed the add-on
+ * would never gain a second migration. It has: `next_attempt_at` is a column on
+ * `reminders`, a table this bundle creates, so a host that applied the bundle
+ * without it would run app code selecting a column its database lacks — which
+ * fails as an unreadable queue rather than as a missing feature.
+ *
+ * Deliberately NOT widened to every migration. sandbox, revoke_anon and
+ * whatsapp_inbound are excluded today and stay excluded; whether they belong in
+ * the host bundle is a separate question from keeping this one consistent.
+ */
+const ADDON = ["lifecycle_events", "reminder_retry_schedule"]
 
 function main() {
   const addonOnly = process.argv.includes("--addon-only")
@@ -32,7 +45,7 @@ function main() {
     // Filename order IS apply order — the timestamps exist for exactly this.
     .sort()
 
-  const chosen = addonOnly ? files.filter((f) => f.includes(ADDON)) : files
+  const chosen = addonOnly ? files.filter((f) => ADDON.some((name) => f.includes(name))) : files
   if (chosen.length === 0) {
     console.error(`No migrations found in ${MIGRATIONS_DIR}.`)
     process.exit(1)

@@ -340,8 +340,24 @@ async function deliverDue(admin: SupabaseClient) {
     .limit(MAX_DELIVERIES_PER_RUN)
 
   if (error) {
-    console.error(`[lifecycle] due reminders fetch failed: ${error.message}`)
-    return { sent: 0, failed: 0, skipped: 0 }
+    /**
+     * THROW, do not return zeros.
+     *
+     * Returning `{sent:0}` here reports "there was nothing to send" for what is
+     * actually "the queue could not be read", and every layer above believes
+     * it: runReminderCycle returns normally, the cron route answers 200 with
+     * ok:true, and the tick workflow goes green every fifteen minutes while
+     * nothing is delivered. reminders-tick.yml guards a 200 with ok:false
+     * precisely because "the job would go green on a broken run, which is the
+     * failure mode a scheduler is least able to afford" — and this path walked
+     * around that guard.
+     *
+     * The likeliest trigger is a schema drift the deploy order makes routine:
+     * Vercel ships on push while migrations are applied by hand, so a column
+     * this query filters on can be absent for minutes. That must page someone,
+     * not read as an empty queue.
+     */
+    throw new Error(`could not read the reminder queue: ${error.message}`)
   }
 
   /**
