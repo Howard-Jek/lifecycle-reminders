@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
 import {
   planRetry,
+  attemptsRemaining,
   describeGiveUp,
   RETRY_BACKOFF_DAYS,
   MAX_ATTEMPTS,
@@ -261,6 +262,51 @@ describe("the instant always matches the date that was approved", () => {
     }
     // Guard the guard: a typo in the loops that checked nothing would pass.
     expect(checked).toBe(ZONES.length * INSTANTS.length * 3)
+  })
+})
+
+describe("attemptsRemaining", () => {
+  const remaining = (over: Partial<Parameters<typeof attemptsRemaining>[0]> = {}) =>
+    attemptsRemaining({
+      eventType: POLICY,
+      attemptsBurnt: 1,
+      occurrenceDate: FAR,
+      now: NOW,
+      timezone: SGT,
+      ...over,
+    })
+
+  it("counts every backoff step when the deadline is far away", () => {
+    expect(remaining()).toBe(RETRY_BACKOFF_DAYS.length)
+    expect(remaining({ attemptsBurnt: 2 })).toBe(2)
+    expect(remaining({ attemptsBurnt: 3 })).toBe(1)
+    expect(remaining({ attemptsBurnt: 4 })).toBe(0)
+  })
+
+  it("is zero for a personal date, whatever the lead time", () => {
+    expect(remaining({ eventType: "birthday" })).toBe(0)
+    expect(remaining({ eventType: "anniversary", occurrenceDate: FAR })).toBe(0)
+  })
+
+  it("is cut short by a near deadline", () => {
+    // NOW is 2026-09-01 in SGT. A policy expiring tomorrow leaves room for the
+    // 1-day step and nothing after it.
+    expect(remaining({ occurrenceDate: "2026-09-02" })).toBe(1)
+    expect(remaining({ occurrenceDate: "2026-09-01" })).toBe(0)
+  })
+
+  it("advances the clock with each step instead of measuring from now", () => {
+    // Occurrence 8 days out. Cumulative: +1 -> 09-02, +3 -> 09-05, +7 -> 09-12,
+    // which overshoots, so TWO remain. Measuring every step from today instead
+    // would fit 1, 3 and 7 all inside the window and claim three — overstating
+    // the runway, which is the same lie the "of 4" denominator told.
+    expect(remaining({ occurrenceDate: "2026-09-09" })).toBe(2)
+  })
+
+  it("never exceeds the backoff ceiling", () => {
+    for (const attemptsBurnt of [0, 1, 2, 3, 4, 10]) {
+      expect(remaining({ attemptsBurnt })).toBeLessThanOrEqual(RETRY_BACKOFF_DAYS.length)
+    }
   })
 })
 

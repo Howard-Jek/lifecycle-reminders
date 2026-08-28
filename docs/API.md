@@ -52,12 +52,19 @@ The endpoint the integration exists for. Everything else manages inputs; this re
 | `expand` | `contact` — adds the client name and event type. Costs one extra round trip. |
 | `limit` / `offset` | Default 50, max 200. `total` is uncapped, so `total > limit` means page. |
 
-**Use `view=due`, not `status=queued`.** "Due" is `queued AND due_at <= now`, the same predicate
-the delivery loop uses. `status=queued` also returns reminders scheduled weeks out.
+**Use `view=due`, not `status=queued`.** "Due" is `queued AND due_at <= now AND attempts = 0` —
+the same predicate the inbox uses. `status=queued` also returns reminders scheduled weeks out,
+*and* ones that already failed and are waiting on a retry.
 
-`view=attention` is `failed` **or** `skipped`. `skipped` is the quiet one — it means the
-reminder resolved to nobody, or the sender was not configured — and it is the reason this view
-exists.
+`view=attention` is `failed`, `skipped`, **or** queued with an attempt behind it. Three states,
+because they are three different problems: `failed` tried and gave up; `skipped` never tried and
+never will — the reminder resolved to nobody, or the sender was not configured, and it is the
+quiet one this view exists for; and a queued row with `attempts > 0` is mid-retry, with
+`next_attempt_at` saying when it comes back.
+
+`next_attempt_at` is null unless a retry is scheduled. Personal dates (birthday, anniversary) are
+never retried, and no retry is scheduled past the occurrence date it is about — so a null there
+on a `failed` row means it is finished, not pending.
 
 ```bash
 curl -H "Authorization: Bearer $TOKEN" \

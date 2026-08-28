@@ -10,11 +10,17 @@ import { ATTENTION_FILTER } from "@/lib/lifecycle/inbox-filters"
  * This is the endpoint the whole integration exists for. Everything else in
  * this API manages inputs; this one reads the output.
  *
- * `status=due` is not a stored value — it is `queued AND due_at <= now`, the
- * same predicate the inbox and the delivery loop use. Exposing it as a named
- * filter keeps that definition in one place: a host app that reimplemented it
- * as "queued" would show reminders that are not due yet, and one that guessed
- * at the timezone would show them on the wrong day.
+ * `view=due` is not a stored value — it is `queued AND due_at <= now AND
+ * attempts = 0`, the same predicate the inbox uses. The attempts clause is what
+ * keeps "due" meaning UNTRIED: a reminder that failed once returns to `queued`,
+ * and without it the API would call that fresh work while the inbox called it a
+ * retry. It is deliberately NOT the delivery loop's predicate, which also gates
+ * on the attempts cap and the retry schedule — those decide what to send next,
+ * not what a human still has to look at.
+ *
+ * Exposing both as named filters keeps the definitions in one place: a host app
+ * that reimplemented `due` as "queued" would show reminders that are not due
+ * yet, and one that guessed at the timezone would show them on the wrong day.
  */
 
 export const dynamic = "force-dynamic"

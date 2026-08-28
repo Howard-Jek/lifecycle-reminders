@@ -141,3 +141,35 @@ function instantOnLocalDate(targetDate: string, timezone: string): Date {
   }
   return candidate
 }
+
+/**
+ * How many further attempts this row can still get.
+ *
+ * MAX_ATTEMPTS is the ceiling from the backoff array alone, and the inbox was
+ * rendering it as "attempt 2 of 4" — which is only true for a reminder with a
+ * long lead time. The deadline bites first whenever the remaining steps would
+ * overshoot the occurrence date, so a row due the day before its policy expires
+ * has ONE attempt left while the badge promised three.
+ *
+ * The clock advances with each granted step rather than being measured from
+ * now: attempt three does not happen one day from today, it happens one day
+ * after attempt two. Measuring every step from the present would overstate how
+ * much runway is left, which is the same lie in a smaller font.
+ */
+export function attemptsRemaining(input: {
+  eventType: string | null | undefined
+  attemptsBurnt: number
+  occurrenceDate: string
+  now: Date
+  timezone: string
+}): number {
+  let clock = input.now
+  let remaining = 0
+  for (let burnt = input.attemptsBurnt; burnt <= MAX_ATTEMPTS; burnt++) {
+    const step = planRetry({ ...input, attemptsBurnt: burnt, now: clock })
+    if (!step.retry) break
+    remaining++
+    clock = new Date(step.nextAttemptAt)
+  }
+  return remaining
+}

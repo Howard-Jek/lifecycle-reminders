@@ -16,7 +16,7 @@ import { WelcomeTour } from "@/components/onboarding/welcome-tour"
 import { getCoverage } from "@/app/actions/coverage"
 import { CalendarClock, Inbox, RotateCw } from "lucide-react"
 import { listKnownEventTypes, isPolicyLike } from "@/lib/lifecycle/event-types"
-import { MAX_ATTEMPTS } from "@/lib/lifecycle/retry-policy"
+import { attemptsRemaining } from "@/lib/lifecycle/retry-policy"
 import { ATTENTION_FILTER } from "@/lib/lifecycle/inbox-filters"
 
 export const metadata = { title: "Reminders" }
@@ -483,6 +483,24 @@ export default async function RemindersPage({
                 retrying && row.next_attempt_at
                   ? daysBetween(today, todayInTimezone(new Date(row.next_attempt_at), timezone))
                   : null
+              /**
+               * The ceiling the DEADLINE allows, not the one the backoff array
+               * allows. "of 4" was only ever true for a reminder with a long
+               * lead time; a row due the day before its policy expires has one
+               * attempt left, and saying otherwise invites someone to wait for
+               * retries that will never be scheduled.
+               */
+              const retryCeiling =
+                retrying && event
+                  ? row.attempts +
+                    attemptsRemaining({
+                      eventType: event.event_type,
+                      attemptsBurnt: row.attempts,
+                      occurrenceDate: row.occurrence_date,
+                      now: new Date(),
+                      timezone,
+                    })
+                  : null
 
               return (
                 <li key={row.id} className="px-5 py-4">
@@ -544,10 +562,12 @@ export default async function RemindersPage({
                           ? "Waiting for the next run"
                           : describeNextAttempt(retryInDays)}
                       </span>
-                      <span className="text-muted-foreground">
-                        · attempt <span className="tabular-nums">{row.attempts + 1}</span> of{" "}
-                        <span className="tabular-nums">{MAX_ATTEMPTS}</span>
-                      </span>
+                      {retryCeiling !== null && (
+                        <span className="text-muted-foreground">
+                          · attempt <span className="tabular-nums">{row.attempts + 1}</span> of{" "}
+                          <span className="tabular-nums">{retryCeiling}</span>
+                        </span>
+                      )}
                     </p>
                   )}
                 </li>
