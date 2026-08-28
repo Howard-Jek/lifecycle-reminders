@@ -34,6 +34,7 @@ import {
   stampDelivered,
 } from "./claim-reminder"
 import { todayInTimezone, daysBetween } from "./occurrence"
+import { planRetry, describeGiveUp, MAX_ATTEMPTS } from "./retry-policy"
 import { humaniseEventType } from "./labels"
 import { draftSuggestion, fallbackSuggestion } from "./suggest-message"
 import {
@@ -77,10 +78,6 @@ const MAX_DELIVERIES_PER_RUN = 40
  * for nothing).
  */
 const DELIVERY_BUDGET_MS = 4 * 60 * 1000
-
-/** Give up after this many attempts, so a permanently bad number does not
- * retry forever. */
-const MAX_ATTEMPTS = 3
 
 const DEFAULT_TIMEZONE = "Asia/Singapore"
 
@@ -289,6 +286,14 @@ type DueRow = {
   occurrence_date: string
   member_id: string | null
   attempts: number
+  /**
+   * Embedded, not joined with `!inner`. An inner join would silently stop
+   * selecting rows whose event has been deleted, and those rows need to be
+   * SELECTED so deliverOne can resolve them to 'skipped' — dropping them from
+   * the query leaves them queued forever, which is the zombie state the
+   * attempts cap exists to prevent, reached by a different door.
+   */
+  contact_events: { event_type: string } | null
 }
 
 async function deliverDue(admin: SupabaseClient) {
@@ -321,10 +326,16 @@ async function deliverDue(admin: SupabaseClient) {
 
   const { data, error } = await admin
     .from("reminders")
-    .select("id, business_id, event_id, rule_id, occurrence_date, member_id, attempts")
+    .select(
+      "id, business_id, event_id, rule_id, occurrence_date, member_id, attempts, " +
+        "contact_events(event_type)",
+    )
     .eq("status", "queued")
     .lte("due_at", nowIso)
     .lt("attempts", MAX_ATTEMPTS)
+    // A row that failed and was rescheduled waits its turn. NULL is "eligible
+    // now" — every first attempt, and every row that predates this column.
+    .or(`next_attempt_at.is.null,next_attempt_at.lte.${nowIso}`)
     .order("due_at", { ascending: true })
     .limit(MAX_DELIVERIES_PER_RUN)
 
@@ -333,7 +344,13 @@ async function deliverDue(admin: SupabaseClient) {
     return { sent: 0, failed: 0, skipped: 0 }
   }
 
-  const due = (data ?? []) as DueRow[]
+  /**
+   * Through `unknown` because of the embed: PostgREST's generated types model
+   * an embedded relation as a union that includes GenericStringError, so the
+   * direct cast is rejected even though the shape is right. Same accommodation
+   * the reminders page makes for the same reason.
+   */
+  const due = (data ?? []) as unknown as DueRow[]
   if (due.length === 0) return { sent: 0, failed: 0, skipped: 0 }
 
   // Per-tenant context is reused across that tenant's reminders in this tick.
@@ -379,11 +396,23 @@ async function deliverDue(admin: SupabaseClient) {
       // blip) returns to 'queued' at attempts = MAX, where the delivery filter
       // excludes it forever: the same zombie the terminal 'failed' state was
       // added to prevent, reached by a different path.
+      const message = err instanceof Error ? err.message : String(err)
+      const plan = planRetry({
+        eventType: row.contact_events?.event_type ?? null,
+        attemptsBurnt: row.attempts + 1,
+        occurrenceDate: row.occurrence_date,
+        now: new Date(),
+        // loadDeliveryContext is itself one of the things that can throw, so
+        // fall back rather than assume this tenant's timezone was resolved.
+        timezone: tenantCache.get(row.business_id)?.timezone ?? DEFAULT_TIMEZONE,
+      })
       await releaseReminder(
         admin,
         row.id,
-        err instanceof Error ? err.message : String(err),
-        row.attempts + 1 >= MAX_ATTEMPTS ? "failed" : "queued",
+        plan.retry ? message : `${message} — ${describeGiveUp(plan.reason)}`,
+        plan.retry ? "queued" : "failed",
+        undefined,
+        plan.retry ? plan.nextAttemptAt : null,
       )
       failed++
     }
@@ -504,20 +533,41 @@ async function deliverOne(
 
   if (!res.ok) {
     // "Not configured" is permanent for this deployment — do not burn retries
-    // on it. Otherwise: `attempts` was already incremented by the claim, so
-    // once it reaches the cap this row would never be selected again and would
-    // sit at 'queued' forever — invisible, un-retried, and counted as pending.
-    // Give it a terminal 'failed' state instead, so it surfaces in the UI.
-    const terminal = res.reason === "not_configured"
-    const exhausted = row.attempts + 1 >= MAX_ATTEMPTS
+    // on it, and do not call it a failure. It is a setup state, and the queue
+    // should still be there when the credentials arrive.
+    if (res.reason === "not_configured") {
+      await releaseReminder(admin, row.id, res.error ?? res.reason, "skipped", suggestion)
+      return "skipped"
+    }
+
+    /**
+     * Everything else is a candidate for another attempt — but only a
+     * candidate. planRetry refuses on three separate grounds (a personal date,
+     * a next attempt that would land after the occurrence, or the cap), and
+     * each refusal is terminal.
+     *
+     * Terminal matters as much as the retry does: `attempts` was already
+     * incremented by the claim, so a row left at 'queued' past the cap would
+     * never be selected again and would sit there invisible, un-retried, and
+     * counted as pending. 'failed' puts it in front of somebody instead.
+     */
+    const plan = planRetry({
+      eventType: event.event_type,
+      attemptsBurnt: row.attempts + 1,
+      occurrenceDate: row.occurrence_date,
+      now: new Date(),
+      timezone: ctx.timezone,
+    })
+    const reason = res.error ?? res.reason
     await releaseReminder(
       admin,
       row.id,
-      res.error ?? res.reason,
-      terminal ? "skipped" : exhausted ? "failed" : "queued",
+      plan.retry ? reason : `${reason} — ${describeGiveUp(plan.reason)}`,
+      plan.retry ? "queued" : "failed",
       suggestion,
+      plan.retry ? plan.nextAttemptAt : null,
     )
-    return terminal ? "skipped" : "failed"
+    return "failed"
   }
 
   // Stamp the wamid FIRST, in its own write. The stuck-claim sweep's "already

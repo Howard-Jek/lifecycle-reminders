@@ -62,6 +62,12 @@ export async function releaseReminder(
   error: string,
   status: Extract<ReminderStatus, "queued" | "failed" | "skipped"> = "queued",
   suggestion?: string,
+  /**
+   * When this row may be tried again. Written on EVERY release, including as
+   * null — a row requeued without a wait must clear whatever an earlier failure
+   * scheduled, or it inherits a delay nobody asked for and looks stuck.
+   */
+  nextAttemptAt: string | null = null,
 ): Promise<void> {
   const { error: updateErr } = await admin
     .from("reminders")
@@ -69,6 +75,7 @@ export async function releaseReminder(
       status,
       claimed_at: null,
       error: error.slice(0, 500),
+      next_attempt_at: nextAttemptAt,
       ...(suggestion ? { suggestion } : {}),
     })
     .eq("id", reminderId)
@@ -121,6 +128,10 @@ export async function markReminderSent(
       whatsapp_message_id: whatsappMessageId,
       suggestion,
       error: null,
+      // Cleared with the error it belonged to. A delivered row carrying a
+      // scheduled retry is a contradiction, and the webhook can still move it
+      // back to 'failed' later — from where it is re-scheduled afresh.
+      next_attempt_at: null,
     })
     .eq("id", reminderId)
 

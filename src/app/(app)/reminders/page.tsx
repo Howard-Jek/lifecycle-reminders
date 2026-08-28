@@ -14,8 +14,10 @@ import { CHECKLIST_COLLAPSED_COOKIE } from "@/lib/onboarding/steps"
 import { getSetupSteps } from "@/app/actions/onboarding"
 import { WelcomeTour } from "@/components/onboarding/welcome-tour"
 import { getCoverage } from "@/app/actions/coverage"
-import { CalendarClock, Inbox } from "lucide-react"
+import { CalendarClock, Inbox, RotateCw } from "lucide-react"
 import { listKnownEventTypes, isPolicyLike } from "@/lib/lifecycle/event-types"
+import { MAX_ATTEMPTS } from "@/lib/lifecycle/retry-policy"
+import { ATTENTION_FILTER } from "@/lib/lifecycle/inbox-filters"
 
 export const metadata = { title: "Reminders" }
 
@@ -58,6 +60,22 @@ type ReminderRow = {
   sent_at: string | null
   member_id: string | null
   event_id: string
+  attempts: number
+  next_attempt_at: string | null
+}
+
+/**
+ * "in 3 days" beats a timestamp here. The operator's question is whether to
+ * wait or to act now, and a date makes them do the subtraction.
+ *
+ * A non-positive number means the wait has already elapsed and the row is
+ * simply waiting for the next tick — which is the truth, and better said than
+ * rendered as "in 0 days".
+ */
+function describeNextAttempt(inDays: number): string {
+  if (inDays <= 0) return "Next attempt on the next run"
+  if (inDays === 1) return "Next attempt tomorrow"
+  return `Next attempt in ${inDays} days`
 }
 
 const PAGE_SIZE = 50
@@ -186,7 +204,8 @@ export default async function RemindersPage({
    * nothing for a feature it is not using.
    */
   const LIST_COLUMNS =
-    "id, occurrence_date, due_at, status, suggestion, error, sent_at, member_id, event_id"
+    "id, occurrence_date, due_at, status, suggestion, error, sent_at, member_id, event_id, " +
+    "attempts, next_attempt_at"
   const withType = (columns: string) =>
     viewTypes.length > 0 ? `${columns}, contact_events!inner(event_type)` : columns
 
@@ -216,13 +235,21 @@ export default async function RemindersPage({
 
   const nowIso = new Date().toISOString()
   if (tab === "due") {
-    query = query.eq("status", "queued").lte("due_at", nowIso).order("due_at", { ascending: true })
+    query = query
+      .eq("status", "queued")
+      .lte("due_at", nowIso)
+      // Untried work only. A row that has already failed once is queued too,
+      // and leaving it here made Due a mix of "nobody has looked at this" and
+      // "this went wrong and is waiting" — the two things an operator most
+      // needs to tell apart. It moves to Needs attention instead.
+      .eq("attempts", 0)
+      .order("due_at", { ascending: true })
   } else if (tab === "upcoming") {
     query = query.eq("status", "queued").gt("due_at", nowIso).order("due_at", { ascending: true })
   } else if (tab === "sent") {
     query = query.eq("status", "sent").order("sent_at", { ascending: false })
   } else {
-    query = query.in("status", ["failed", "skipped"]).order("due_at", { ascending: false })
+    query = query.or(ATTENTION_FILTER).order("due_at", { ascending: false })
   }
 
   if (mineActive) query = query.eq("member_id", myMemberId)
@@ -235,10 +262,10 @@ export default async function RemindersPage({
       .select(withType("id"), { count: "exact", head: true })
       .eq("business_id", tenant.businessId)
     if (viewTypes.length > 0) q = q.in("contact_events.event_type", viewTypes)
-    if (id === "due") q = q.eq("status", "queued").lte("due_at", nowIso)
+    if (id === "due") q = q.eq("status", "queued").lte("due_at", nowIso).eq("attempts", 0)
     else if (id === "upcoming") q = q.eq("status", "queued").gt("due_at", nowIso)
     else if (id === "sent") q = q.eq("status", "sent")
-    else q = q.in("status", ["failed", "skipped"])
+    else q = q.or(ATTENTION_FILTER)
     if (mineActive) q = q.eq("member_id", myMemberId)
     return q
   }
@@ -445,6 +472,18 @@ export default async function RemindersPage({
                 ? members.get(row.member_id) ?? "Removed member"
                 : "Owner (unassigned)"
 
+              /**
+               * A queued row with an attempt behind it is not "queued" in any
+               * sense an operator recognises — it is a retry waiting its turn.
+               * Naming it that, with the date, is what makes this tab readable
+               * without opening every row.
+               */
+              const retrying = row.status === "queued" && row.attempts > 0
+              const retryInDays =
+                retrying && row.next_attempt_at
+                  ? daysBetween(today, todayInTimezone(new Date(row.next_attempt_at), timezone))
+                  : null
+
               return (
                 <li key={row.id} className="px-5 py-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
@@ -465,10 +504,12 @@ export default async function RemindersPage({
                         <span
                           className={cn(
                             "inline-flex h-5 items-center rounded-full px-2 text-xs font-medium",
-                            REMINDER_STATUS_PILL[row.status] ?? "bg-foreground/5",
+                            retrying
+                              ? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                              : REMINDER_STATUS_PILL[row.status] ?? "bg-foreground/5",
                           )}
                         >
-                          {row.status}
+                          {retrying ? "retrying" : row.status}
                         </span>
                       </p>
                       <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
@@ -492,6 +533,21 @@ export default async function RemindersPage({
                   {row.error && (
                     <p className="mt-2 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
                       {row.error}
+                    </p>
+                  )}
+
+                  {retrying && (
+                    <p className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-amber-700 dark:text-amber-400">
+                      <RotateCw className="size-3.5" strokeWidth={1.75} />
+                      <span className="tabular-nums">
+                        {retryInDays === null
+                          ? "Waiting for the next run"
+                          : describeNextAttempt(retryInDays)}
+                      </span>
+                      <span className="text-muted-foreground">
+                        · attempt <span className="tabular-nums">{row.attempts + 1}</span> of{" "}
+                        <span className="tabular-nums">{MAX_ATTEMPTS}</span>
+                      </span>
                     </p>
                   )}
                 </li>
