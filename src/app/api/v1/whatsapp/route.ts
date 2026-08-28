@@ -1,7 +1,11 @@
 import { withApiToken } from "@/lib/api/handler"
 import { ok } from "@/lib/api/respond"
 import { isDryRun } from "@/lib/env"
-import { fetchPhoneNumberStatus, fetchSubscribedApps } from "@/lib/notify/template-admin"
+import {
+  fetchPhoneNumberStatus,
+  fetchSubscribedApps,
+  fetchAppSubscriptions,
+} from "@/lib/notify/template-admin"
 
 /**
  * GET /api/v1/whatsapp — the state of the number this deployment sends FROM.
@@ -35,9 +39,12 @@ export async function GET(request: Request) {
     // Both in one wave: a number that can send and a webhook that reports back
     // are separate prerequisites, and each fails in a way that looks like the
     // other's problem.
-    const [status, subs] = await Promise.all([
+    const appId = process.env.GOMA_NOTIFY_APP_ID?.trim()
+    const appSecret = process.env.GOMA_NOTIFY_APP_SECRET?.trim()
+    const [status, subs, appSubs] = await Promise.all([
       fetchPhoneNumberStatus(accessToken, phoneNumberId),
       wabaId ? fetchSubscribedApps(accessToken, wabaId) : Promise.resolve(null),
+      appId && appSecret ? fetchAppSubscriptions(appId, appSecret) : Promise.resolve(null),
     ])
     if (!status.ok) return ok({ configured: true, ok: false, detail: status.error })
 
@@ -61,6 +68,13 @@ export async function GET(request: Request) {
       webhook_subscribed_apps: subs && subs.ok ? subs.subscribedApps : null,
       webhook_receiving: subs && subs.ok ? subs.subscribedApps.length > 0 : null,
       webhook_error: subs && !subs.ok ? subs.error : null,
+      // The second half of "are we receiving webhooks". The app can be attached
+      // to the WABA and still be subscribed to no FIELDS, in which case nothing
+      // is ever delivered and every other indicator says fine.
+      webhook_fields: appSubs && appSubs.ok ? appSubs.fields : null,
+      webhook_callback_url: appSubs && appSubs.ok ? appSubs.callbackUrl : null,
+      webhook_messages_field: appSubs && appSubs.ok ? appSubs.fields.includes("messages") : null,
+      webhook_fields_error: appSubs && !appSubs.ok ? appSubs.error : null,
       dry_run: isDryRun(),
       // Named separately because the remedies are unrelated: one is a PIN, the
       // other is a name Meta will accept.

@@ -461,3 +461,58 @@ export async function subscribeApp(
   if (!res.ok) return { ok: false, error: describeGraphError(data?.error, res.status) }
   return { ok: true }
 }
+
+
+/**
+ * Which webhook FIELDS the Meta app is subscribed to.
+ *
+ * Distinct from fetchSubscribedApps, and the distinction has teeth. That one
+ * asks "is this app attached to this WABA"; this asks "and which events has the
+ * app asked to receive". Both must be true. An app attached to a WABA with no
+ * `messages` field subscribed receives absolutely nothing, and every surface
+ * that could tell you so reports success.
+ *
+ * Uses an APP access token (`{app-id}|{app-secret}`) rather than the user
+ * token, because app subscriptions are app-level configuration. That is the one
+ * job the App ID has here — I previously said it had none.
+ */
+export type AppSubscriptions =
+  | { ok: true; fields: string[]; callbackUrl: string | null }
+  | { ok: false; error: string }
+
+export async function fetchAppSubscriptions(
+  appId: string,
+  appSecret: string,
+): Promise<AppSubscriptions> {
+  let res: Response
+  try {
+    res = await fetch(
+      `https://graph.facebook.com/${GRAPH_API_VERSION}/${appId}/subscriptions` +
+        `?access_token=${encodeURIComponent(`${appId}|${appSecret}`)}`,
+    )
+  } catch (e) {
+    return { ok: false, error: `could not reach graph.facebook.com — ${(e as Error).message}` }
+  }
+  const data = (await res.json().catch(() => null)) as
+    | {
+        data?: Array<{
+          object?: string
+          callback_url?: string
+          fields?: Array<{ name?: string } | string>
+        }>
+        error?: GraphError
+      }
+    | null
+  if (!res.ok) return { ok: false, error: describeGraphError(data?.error, res.status) }
+
+  const whatsapp = (data?.data ?? []).find((row) => row.object === "whatsapp_business_account")
+  if (!whatsapp) return { ok: true, fields: [], callbackUrl: null }
+
+  return {
+    ok: true,
+    fields: (whatsapp.fields ?? [])
+      .map((f) => (typeof f === "string" ? f : (f.name ?? "")))
+      .filter(Boolean),
+    callbackUrl: whatsapp.callback_url ?? null,
+  }
+}
