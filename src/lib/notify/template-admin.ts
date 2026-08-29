@@ -547,6 +547,16 @@ export type AccountStatus =
       /** APPROVED / PENDING / REJECTED. */
       accountReviewStatus: string | null
       businessVerificationStatus: string | null
+      /**
+       * The funding source Meta bills against.
+       *
+       * NULL is a documented hard stop that presents as silence: Meta blocks
+       * OUTGOING messages on an account with no valid payment method while
+       * still accepting the API call and returning a message id. Nothing fails,
+       * so nothing is reported — the send is simply never attempted.
+       */
+      primaryFundingId: string | null
+      currency: string | null
       /** Set when Meta has restricted the account. */
       status: string | null
     }
@@ -560,7 +570,8 @@ export async function fetchAccountStatus(
   try {
     res = await fetch(
       `https://graph.facebook.com/${GRAPH_API_VERSION}/${wabaId}` +
-        `?fields=name,account_review_status,business_verification_status,status`,
+        `?fields=name,account_review_status,business_verification_status,status,` +
+        `primary_funding_id,currency,timezone_id,owner_business_info`,
       { headers: { Authorization: `Bearer ${accessToken}` } },
     )
   } catch (e) {
@@ -571,6 +582,8 @@ export async function fetchAccountStatus(
         name?: string
         account_review_status?: string
         business_verification_status?: string
+        primary_funding_id?: string
+        currency?: string
         status?: string
         error?: GraphError
       }
@@ -581,6 +594,8 @@ export async function fetchAccountStatus(
     name: data?.name ?? null,
     accountReviewStatus: data?.account_review_status ?? null,
     businessVerificationStatus: data?.business_verification_status ?? null,
+    primaryFundingId: data?.primary_funding_id ?? null,
+    currency: data?.currency ?? null,
     status: data?.status ?? null,
   }
 }

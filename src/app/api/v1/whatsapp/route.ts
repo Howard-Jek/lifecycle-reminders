@@ -71,6 +71,11 @@ export async function GET(request: Request) {
             review_status: account.accountReviewStatus,
             business_verification: account.businessVerificationStatus,
             status: account.status,
+            // NULL here blocks every outbound message, silently: Meta accepts
+            // the API call, returns a message id, and never attempts delivery.
+            primary_funding_id: account.primaryFundingId,
+            has_payment_method: Boolean(account.primaryFundingId),
+            currency: account.currency,
           }
         : null,
       account_error: account && !account.ok ? account.error : null,
