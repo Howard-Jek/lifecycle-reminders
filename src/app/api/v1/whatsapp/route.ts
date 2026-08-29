@@ -6,6 +6,7 @@ import {
   fetchSubscribedApps,
   fetchAppSubscriptions,
   fetchAccountStatus,
+  fetchFundingStatus,
 } from "@/lib/notify/template-admin"
 
 /**
@@ -42,11 +43,12 @@ export async function GET(request: Request) {
     // other's problem.
     const appId = process.env.GOMA_NOTIFY_APP_ID?.trim()
     const appSecret = process.env.GOMA_NOTIFY_APP_SECRET?.trim()
-    const [status, subs, appSubs, account] = await Promise.all([
+    const [status, subs, appSubs, account, funding] = await Promise.all([
       fetchPhoneNumberStatus(accessToken, phoneNumberId),
       wabaId ? fetchSubscribedApps(accessToken, wabaId) : Promise.resolve(null),
       appId && appSecret ? fetchAppSubscriptions(appId, appSecret) : Promise.resolve(null),
       wabaId ? fetchAccountStatus(accessToken, wabaId) : Promise.resolve(null),
+      wabaId ? fetchFundingStatus(accessToken, wabaId) : Promise.resolve(null),
     ])
     if (!status.ok) return ok({ configured: true, ok: false, detail: status.error })
 
@@ -71,14 +73,17 @@ export async function GET(request: Request) {
             review_status: account.accountReviewStatus,
             business_verification: account.businessVerificationStatus,
             status: account.status,
-            // NULL here blocks every outbound message, silently: Meta accepts
-            // the API call, returns a message id, and never attempts delivery.
-            primary_funding_id: account.primaryFundingId,
-            has_payment_method: Boolean(account.primaryFundingId),
-            currency: account.currency,
           }
         : null,
       account_error: account && !account.ok ? account.error : null,
+      // Usually unreadable without BSP access, and said plainly rather than
+      // reported as "no payment method" — which would be a guess, and the wrong
+      // one to act on.
+      billing: funding
+        ? funding.ok
+          ? { has_payment_method: Boolean(funding.primaryFundingId) }
+          : { has_payment_method: null, note: "not readable by this app — check Meta Business Manager -> Billing & payments" }
+        : null,
       status: status.status,
       platform_type: status.platformType,
       quality_rating: status.qualityRating,

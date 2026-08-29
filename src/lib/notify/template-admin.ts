@@ -547,16 +547,6 @@ export type AccountStatus =
       /** APPROVED / PENDING / REJECTED. */
       accountReviewStatus: string | null
       businessVerificationStatus: string | null
-      /**
-       * The funding source Meta bills against.
-       *
-       * NULL is a documented hard stop that presents as silence: Meta blocks
-       * OUTGOING messages on an account with no valid payment method while
-       * still accepting the API call and returning a message id. Nothing fails,
-       * so nothing is reported — the send is simply never attempted.
-       */
-      primaryFundingId: string | null
-      currency: string | null
       /** Set when Meta has restricted the account. */
       status: string | null
     }
@@ -570,8 +560,7 @@ export async function fetchAccountStatus(
   try {
     res = await fetch(
       `https://graph.facebook.com/${GRAPH_API_VERSION}/${wabaId}` +
-        `?fields=name,account_review_status,business_verification_status,status,` +
-        `primary_funding_id,currency,timezone_id,owner_business_info`,
+        `?fields=name,account_review_status,business_verification_status,status`,
       { headers: { Authorization: `Bearer ${accessToken}` } },
     )
   } catch (e) {
@@ -582,8 +571,6 @@ export async function fetchAccountStatus(
         name?: string
         account_review_status?: string
         business_verification_status?: string
-        primary_funding_id?: string
-        currency?: string
         status?: string
         error?: GraphError
       }
@@ -594,8 +581,45 @@ export async function fetchAccountStatus(
     name: data?.name ?? null,
     accountReviewStatus: data?.account_review_status ?? null,
     businessVerificationStatus: data?.business_verification_status ?? null,
-    primaryFundingId: data?.primary_funding_id ?? null,
-    currency: data?.currency ?? null,
     status: data?.status ?? null,
   }
+}
+
+
+/**
+ * Whether Meta will bill this account — i.e. whether it can send at all.
+ *
+ * SEPARATE CALL on purpose. primary_funding_id is readable only by a Business
+ * Solution Provider, and Graph rejects an ENTIRE field list containing one
+ * field the caller cannot read: asking for it alongside account_review_status
+ * loses the review status too, with a permission error that names neither. So
+ * this is asked on its own and allowed to fail.
+ *
+ * A missing payment method is a documented hard stop that presents as silence —
+ * Meta blocks outgoing messages while still accepting the API call and
+ * returning a message id. Worth asking even when the answer is usually "you
+ * cannot know from here".
+ */
+export type FundingStatus =
+  | { ok: true; primaryFundingId: string | null }
+  | { ok: false; error: string; readable: false }
+
+export async function fetchFundingStatus(
+  accessToken: string,
+  wabaId: string,
+): Promise<FundingStatus> {
+  let res: Response
+  try {
+    res = await fetch(
+      `https://graph.facebook.com/${GRAPH_API_VERSION}/${wabaId}?fields=primary_funding_id`,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    )
+  } catch (e) {
+    return { ok: false, readable: false, error: `could not reach graph — ${(e as Error).message}` }
+  }
+  const data = (await res.json().catch(() => null)) as
+    | { primary_funding_id?: string; error?: GraphError }
+    | null
+  if (!res.ok) return { ok: false, readable: false, error: describeGraphError(data?.error, res.status) }
+  return { ok: true, primaryFundingId: data?.primary_funding_id ?? null }
 }
