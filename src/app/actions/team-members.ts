@@ -6,6 +6,7 @@ import { requireTenant } from "@/lib/tenant"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { normalizePhone } from "@/lib/sanitize"
 import { appPublicUrl } from "@/lib/env"
+import { sendRosterTestMessage } from "@/lib/notify/test-message"
 import type { TeamMember } from "@/lib/lifecycle/types"
 
 export type ActionResult<T = undefined> =
@@ -96,18 +97,28 @@ async function businessCountryCode(businessId: string): Promise<string> {
   return map[(data?.country_code ?? "SG").toUpperCase()] ?? "+65"
 }
 
-export async function createTeamMember(input: MemberInput): Promise<ActionResult> {
+/** Enough of the new row to offer a test send without a second round trip. */
+export type CreatedMember = { id: string; display_name: string; whatsapp_number: string }
+
+export async function createTeamMember(input: MemberInput): Promise<ActionResult<CreatedMember>> {
   const tenant = await requireTenant()
   const checked = validate(input, await businessCountryCode(tenant.businessId))
   if (!checked.ok) return checked
 
-  const { error } = await createAdminClient().from("team_members").insert({
-    business_id: tenant.businessId,
-    display_name: checked.displayName,
-    email: checked.email,
-    whatsapp_number: checked.whatsappNumber,
-    role: checked.role,
-  })
+  // Selected back rather than fire-and-forget: the caller offers to test the
+  // number immediately, and asking "which row did I just create?" by matching
+  // on the number would be guessing at the one moment we actually know.
+  const { data, error } = await createAdminClient()
+    .from("team_members")
+    .insert({
+      business_id: tenant.businessId,
+      display_name: checked.displayName,
+      email: checked.email,
+      whatsapp_number: checked.whatsappNumber,
+      role: checked.role,
+    })
+    .select("id, display_name, whatsapp_number")
+    .maybeSingle<CreatedMember>()
 
   if (error) {
     if (error.code === "23505") {
@@ -116,9 +127,10 @@ export async function createTeamMember(input: MemberInput): Promise<ActionResult
     console.error("[team-members] create failed:", error.message)
     return { ok: false, error: error.message }
   }
+  if (!data) return { ok: false, error: "The member could not be created." }
 
   revalidatePath("/team")
-  return { ok: true }
+  return { ok: true, data }
 }
 
 export async function updateTeamMember(id: string, input: MemberInput): Promise<ActionResult> {
@@ -237,4 +249,66 @@ export async function revokeCalendarFeed(memberId: string): Promise<ActionResult
   if (error) return { ok: false, error: error.message }
   revalidatePath("/team")
   return { ok: true }
+}
+
+export type TestSendReceipt = {
+  displayName: string
+  /** The number the message was addressed to, echoed back from the sender. */
+  number: string
+  /** True when nothing left the building — REMINDER_DRY_RUN is on. */
+  dryRun: boolean
+  /**
+   * The member is deactivated.
+   *
+   * Worth surfacing precisely because the test still ARRIVES: the send path
+   * does not consult `active`, only the materialiser does. Without saying so,
+   * a delivered test to an inactive agent reads as proof that their reminders
+   * work, when in fact they will never receive one.
+   */
+  inactive: boolean
+}
+
+/**
+ * Put one real message on one agent's handset.
+ *
+ * The only send this app performs on demand, and the only one an operator can
+ * trigger by hand. It exists because a saved number is not a verified one:
+ * validation proves the shape, and every remaining failure — wrong person,
+ * no WhatsApp account on that number — is silent at delivery time.
+ *
+ * Scoped to the caller's own roster by the same query that authorises it. Every
+ * export of a `"use server"` module is a public POST endpoint, so the business
+ * filter here is the access control, not a convenience: without it this would
+ * be an authenticated relay that sends from a verified business number to any
+ * uuid a caller can guess.
+ */
+export async function sendTestMessage(memberId: string): Promise<ActionResult<TestSendReceipt>> {
+  const tenant = await requireTenant()
+
+  const { data: member } = await createAdminClient()
+    .from("team_members")
+    .select("id, display_name, whatsapp_number, active")
+    .eq("id", memberId)
+    .eq("business_id", tenant.businessId)
+    .maybeSingle<{
+      id: string
+      display_name: string
+      whatsapp_number: string | null
+      active: boolean
+    }>()
+
+  if (!member) return { ok: false, error: "That team member no longer exists." }
+
+  const result = await sendRosterTestMessage(member)
+  if (!result.ok) return { ok: false, error: result.error }
+
+  return {
+    ok: true,
+    data: {
+      displayName: member.display_name,
+      number: result.to,
+      dryRun: result.dryRun,
+      inactive: !member.active,
+    },
+  }
 }

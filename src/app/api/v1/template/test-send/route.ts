@@ -2,10 +2,8 @@ import { z } from "zod"
 import { withApiToken } from "@/lib/api/handler"
 import { ok, badRequest, notFound } from "@/lib/api/respond"
 import { readJson } from "@/lib/api/respond"
-import { isDryRun, appPublicUrl } from "@/lib/env"
-import { readWhatsappCredentials, fetchTemplateStatus } from "@/lib/notify/template-admin"
 import { isSamePhoneNumber } from "@/lib/phone-match"
-import { sendClientEventReminder } from "@/lib/notify/client-event-reminder"
+import { sendRosterTestMessage } from "@/lib/notify/test-message"
 
 /**
  * POST /api/v1/template/test-send — put one real message on a real handset.
@@ -96,51 +94,20 @@ export async function POST(request: Request) {
           "then retry. This endpoint only messages your own roster.",
       )
     }
-    if (!target.whatsapp_number) {
-      return badRequest(`${target.display_name} has no WhatsApp number on file`)
-    }
 
-    const result = await sendClientEventReminder(target.whatsapp_number, {
-      // Unmistakably a test on the handset. A realistic-looking sample would
-      // be indistinguishable from a real reminder about a real client.
-      clientLabel: "Test Contact",
-      eventLabel: "Test reminder",
-      whenText: "today",
-      suggestion:
-        "This is a test message from Lifecycle. If you can read this, the template is approved and delivery works.",
-      deepLink: `${appPublicUrl() || "https://lifecycle-app-tau.vercel.app"}/reminders`,
+    // Same resolution, same template, same sender as the Team page button —
+    // one code path, so a green test here means the button works too.
+    const result = await sendRosterTestMessage(target)
+    if (!result.ok) return badRequest(result.error)
+
+    return ok({
+      sent: true,
+      to: { member_id: target.id, display_name: target.display_name },
+      whatsapp_message_id: result.whatsappMessageId,
+      dry_run: result.dryRun,
+      note: result.dryRun
+        ? "REMINDER_DRY_RUN is on: nothing was sent to WhatsApp and this id is synthetic."
+        : "Delivery is asynchronous. A failure arrives at /api/webhooks/whatsapp and lands the reminder in Needs attention.",
     })
-
-    if (result.ok) {
-      return ok({
-        sent: true,
-        to: { member_id: target.id, display_name: target.display_name },
-        whatsapp_message_id: result.whatsappMessageId,
-        // Dry run stamps a synthetic id and returns ok, so without this the
-        // response is indistinguishable from a real delivery and the obvious
-        // conclusion — "it says sent, my phone says nothing" — is a wrong one.
-        dry_run: isDryRun(),
-        note: isDryRun()
-          ? "REMINDER_DRY_RUN is on: nothing was sent to WhatsApp and this id is synthetic."
-          : "Delivery is asynchronous. A failure arrives at /api/webhooks/whatsapp and lands the reminder in Needs attention.",
-      })
-    }
-
-    if (result.reason === "not_configured") {
-      return badRequest(
-        "WhatsApp is not configured — set GOMA_NOTIFY_PHONE_NUMBER_ID and GOMA_NOTIFY_ACCESS_TOKEN",
-      )
-    }
-
-    // Meta's send errors are famously unhelpful in isolation: #132001 says
-    // "template does not exist" whether it was never submitted, is still
-    // pending, or exists in a different LANGUAGE. One extra Graph call turns
-    // that into an answer instead of a search.
-    const creds = readWhatsappCredentials()
-    const status = creds ? await fetchTemplateStatus(creds) : null
-    return badRequest(
-      `WhatsApp rejected the send: ${result.error ?? "unknown error"}` +
-        (status?.ok ? ` (template state: ${status.state})` : ""),
-    )
   })
 }
