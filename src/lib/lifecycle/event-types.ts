@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { buildKnownTypes } from "./event-facts"
 
 /**
  * The event types this business actually uses.
@@ -36,35 +37,29 @@ export async function listKnownEventTypes(
   admin: SupabaseClient,
   businessId: string,
 ): Promise<KnownEventType[]> {
-  const [rules, events] = await Promise.all([
+  const [rules, counts] = await Promise.all([
     admin
       .from("reminder_rules")
       .select("event_type")
       .eq("business_id", businessId)
       .eq("active", true),
-    // Capped: this only needs the DISTINCT set, and PostgREST has no distinct.
-    // 10k rows is far past the point where a new type would still be unseen,
-    // and it is the same cap getCoverage() uses.
-    admin.from("contact_events").select("event_type").eq("business_id", businessId).limit(10000),
+    // Aggregated in Postgres. This used to select up to 10,000 rows of a single
+    // column and count them here — 672 rows moved to produce three strings on
+    // live data — and the cap was a silent correctness bug besides: a business
+    // past it simply stopped seeing some of its own event types, with no error
+    // and no warning. GROUP BY has no ceiling.
+    admin.rpc("event_type_counts", { p_business_id: businessId }),
   ])
 
-  const usage = new Map<string, number>()
-  for (const row of events.data ?? []) {
-    const type = row.event_type as string
-    usage.set(type, (usage.get(type) ?? 0) + 1)
-  }
+  if (counts.error) console.error(`[event-types] counts failed: ${counts.error.message}`)
 
-  const ruled = new Set((rules.data ?? []).map((r) => r.event_type as string))
-  const all = new Set<string>([...ruled, ...usage.keys()])
-
-  return Array.from(all)
-    .map((value) => ({ value, hasRule: ruled.has(value), usedBy: usage.get(value) ?? 0 }))
-    .sort((a, b) => {
-      // Types that will actually fire, then the most-used, then alphabetical.
-      if (a.hasRule !== b.hasRule) return a.hasRule ? -1 : 1
-      if (a.usedBy !== b.usedBy) return b.usedBy - a.usedBy
-      return a.value.localeCompare(b.value)
-    })
+  return buildKnownTypes(
+    ((counts.data ?? []) as Array<{ event_type: string; count: number }>).map((r) => ({
+      event_type: r.event_type,
+      count: Number(r.count),
+    })),
+    Array.from(new Set((rules.data ?? []).map((r) => r.event_type as string))),
+  )
 }
 
 /**

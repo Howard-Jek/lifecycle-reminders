@@ -9,13 +9,12 @@ import { REMINDER_STATUS_PILL } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { CopyButton } from "@/components/copy-button"
 import { CoverageBanner } from "@/components/coverage-banner"
-import { SetupChecklist } from "@/components/onboarding/setup-checklist"
+import { SetupChecklistSection } from "@/components/onboarding/setup-checklist-section"
 import { CHECKLIST_COLLAPSED_COOKIE } from "@/lib/onboarding/steps"
-import { getSetupSteps } from "@/app/actions/onboarding"
 import { WelcomeTour } from "@/components/onboarding/welcome-tour"
-import { getCoverage } from "@/app/actions/coverage"
 import { CalendarClock, Inbox } from "lucide-react"
-import { listKnownEventTypes, isPolicyLike } from "@/lib/lifecycle/event-types"
+import { isPolicyLike } from "@/lib/lifecycle/event-types"
+import { loadEventFacts } from "@/lib/lifecycle/event-facts"
 import { applyReminderScope, type ReminderScope } from "@/lib/lifecycle/reminder-filters"
 import { deriveSendingStatus } from "@/lib/lifecycle/sending-status"
 import { MAX_OVERDUE_DAYS } from "@/lib/lifecycle/plan-reminders"
@@ -95,17 +94,18 @@ export default async function RemindersPage({
   // queue that can never fill look identical, and this is the page where that
   // matters.
   const [
-    coverage,
+    eventFacts,
     businessRes,
     memberRes,
-    setupSteps,
     cookieStore,
-    knownTypes,
     lastRunRes,
     nextDueRes,
   ] =
     await Promise.all([
-      getCoverage(),
+      // ONE fetch for both the coverage banner and the type filter. They asked
+      // the same question separately, which cost four round trips and moved 672
+      // rows twice to derive three strings.
+      loadEventFacts(admin, tenant.businessId),
       admin
         .from("businesses")
         .select("timezone")
@@ -115,9 +115,7 @@ export default async function RemindersPage({
         .from("team_members")
         .select("id, display_name, auth_user_id")
         .eq("business_id", tenant.businessId),
-      getSetupSteps(),
       cookies(),
-      listKnownEventTypes(admin, tenant.businessId),
       // Did the engine run? Deployment-wide, so no business filter — there is
       // one engine, and "is it running" is not a per-tenant fact.
       admin
@@ -136,6 +134,8 @@ export default async function RemindersPage({
         .limit(1)
         .maybeSingle<{ due_at: string }>(),
     ])
+
+  const { coverage, knownTypes } = eventFacts
 
   /**
    * Renewals and birthdays are the same row in the same table, and a manager
@@ -368,9 +368,10 @@ export default async function RemindersPage({
           at three seconds, when WhatsApp is unconfigured there is no network
           call at all, and its counts ride in the batch above rather than
           costing a wave of their own. */}
-      <SetupChecklist
-        steps={setupSteps}
-        defaultCollapsed={cookieStore.get(CHECKLIST_COLLAPSED_COOKIE)?.value === "1"}
+      {/* Streamed: it asks Meta about the template, and that question must not
+          hold the inbox. The placeholder is sized from the same cookie. */}
+      <SetupChecklistSection
+        collapsed={cookieStore.get(CHECKLIST_COLLAPSED_COOKIE)?.value === "1"}
       />
       <CoverageBanner coverage={coverage} />
       {/* Above the card, not inside it: this is a fact about the whole engine,
