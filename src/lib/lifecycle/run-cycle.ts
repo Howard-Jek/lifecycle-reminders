@@ -93,7 +93,11 @@ export type CycleResult = {
   skipped: number
 }
 
-export async function runReminderCycle(admin: SupabaseClient): Promise<CycleResult> {
+export async function runReminderCycle(
+  admin: SupabaseClient,
+  /** Which driver invoked this: cron, github, or a local tick. */
+  source = "cron",
+): Promise<CycleResult> {
   // Reclaim rows a dead worker left 'claimed' — otherwise they are invisible
   // forever, because the delivery query only looks at 'queued'.
   const requeued = await requeueStuckClaims(admin, 30, MAX_ATTEMPTS)
@@ -104,6 +108,31 @@ export async function runReminderCycle(admin: SupabaseClient): Promise<CycleResu
 
   const result = { requeued, ...materialised, ...delivered }
   console.log("[lifecycle] cycle done", result)
+
+  /**
+   * Leave evidence that the cycle ran.
+   *
+   * The inbox cannot otherwise tell a quiet queue from a stopped engine — both
+   * render as reminders sitting at "Due" with nothing happening. Written after
+   * the work, so a row means the cycle actually completed rather than merely
+   * started.
+   *
+   * Best-effort: a failed heartbeat must never fail a cycle that has already
+   * delivered messages.
+   */
+  try {
+    const { error } = await admin.from("scheduler_runs").insert({
+      materialised: result.inserted,
+      sent: result.sent ?? 0,
+      failed: result.failed ?? 0,
+      skipped: result.skipped ?? 0,
+      source,
+    })
+    if (error) console.warn(`[lifecycle] could not record scheduler run: ${error.message}`)
+  } catch (err) {
+    console.warn(`[lifecycle] could not record scheduler run: ${String(err)}`)
+  }
+
   return result
 }
 

@@ -16,6 +16,11 @@ import { WelcomeTour } from "@/components/onboarding/welcome-tour"
 import { getCoverage } from "@/app/actions/coverage"
 import { CalendarClock, Inbox } from "lucide-react"
 import { listKnownEventTypes, isPolicyLike } from "@/lib/lifecycle/event-types"
+import { applyReminderScope, type ReminderScope } from "@/lib/lifecycle/reminder-filters"
+import { deriveSendingStatus } from "@/lib/lifecycle/sending-status"
+import { MAX_OVERDUE_DAYS } from "@/lib/lifecycle/plan-reminders"
+import { SendingStatusBanner } from "@/components/sending-status-banner"
+import { DeleteReminderButton, ClearTabButton } from "@/components/reminder-actions"
 
 export const metadata = { title: "Reminders" }
 
@@ -89,7 +94,16 @@ export default async function RemindersPage({
   // Coverage is loaded here rather than in the shell: an empty queue and a
   // queue that can never fill look identical, and this is the page where that
   // matters.
-  const [coverage, businessRes, memberRes, setupSteps, cookieStore, knownTypes] =
+  const [
+    coverage,
+    businessRes,
+    memberRes,
+    setupSteps,
+    cookieStore,
+    knownTypes,
+    lastRunRes,
+    nextDueRes,
+  ] =
     await Promise.all([
       getCoverage(),
       admin
@@ -104,6 +118,23 @@ export default async function RemindersPage({
       getSetupSteps(),
       cookies(),
       listKnownEventTypes(admin, tenant.businessId),
+      // Did the engine run? Deployment-wide, so no business filter — there is
+      // one engine, and "is it running" is not a per-tenant fact.
+      admin
+        .from("scheduler_runs")
+        .select("ran_at")
+        .order("ran_at", { ascending: false })
+        .limit(1)
+        .maybeSingle<{ ran_at: string }>(),
+      // The earliest thing still waiting, for "next due".
+      admin
+        .from("reminders")
+        .select("due_at")
+        .eq("business_id", tenant.businessId)
+        .eq("status", "queued")
+        .order("due_at", { ascending: true })
+        .limit(1)
+        .maybeSingle<{ due_at: string }>(),
     ])
 
   /**
@@ -147,6 +178,9 @@ export default async function RemindersPage({
       : view === "policies"
         ? policiesLabel
         : (VIEWS.find((v) => v.id === view)?.label ?? "All")
+
+  const sendingStatus = deriveSendingStatus(lastRunRes.data?.ran_at ?? null)
+  const nextDueAt = nextDueRes.data?.due_at ?? null
 
   const timezone = businessRes.data?.timezone || "Asia/Singapore"
   const today = todayInTimezone(new Date(), timezone)
@@ -215,32 +249,33 @@ export default async function RemindersPage({
   }
 
   const nowIso = new Date().toISOString()
-  if (tab === "due") {
-    query = query.eq("status", "queued").lte("due_at", nowIso).order("due_at", { ascending: true })
-  } else if (tab === "upcoming") {
-    query = query.eq("status", "queued").gt("due_at", nowIso).order("due_at", { ascending: true })
-  } else if (tab === "sent") {
-    query = query.eq("status", "sent").order("sent_at", { ascending: false })
-  } else {
-    query = query.in("status", ["failed", "skipped"]).order("due_at", { ascending: false })
-  }
 
-  if (mineActive) query = query.eq("member_id", myMemberId)
+  /**
+   * One description of "what this tab is showing", shared with the Clear
+   * button's server action. Two copies would let the count beside the button
+   * drift from the rows the button deletes.
+   */
+  const scopeFor = (id: TabId): ReminderScope => ({
+    tab: id,
+    mine: mineActive,
+    memberId: myMemberId,
+    viewTypes,
+    nowIso,
+  })
+
+  query = applyReminderScope(query, scopeFor(tab))
+  if (tab === "sent") query = query.order("sent_at", { ascending: false })
+  else if (tab === "attention") query = query.order("due_at", { ascending: false })
+  else query = query.order("due_at", { ascending: true })
 
   // How many are behind each tab, so "Needs attention" can say so without
   // being opened. `head: true` — these are counts, no rows cross the wire.
   const countFor = (id: TabId) => {
-    let q = admin
+    const q = admin
       .from("reminders")
       .select(withType("id"), { count: "exact", head: true })
       .eq("business_id", tenant.businessId)
-    if (viewTypes.length > 0) q = q.in("contact_events.event_type", viewTypes)
-    if (id === "due") q = q.eq("status", "queued").lte("due_at", nowIso)
-    else if (id === "upcoming") q = q.eq("status", "queued").gt("due_at", nowIso)
-    else if (id === "sent") q = q.eq("status", "sent")
-    else q = q.in("status", ["failed", "skipped"])
-    if (mineActive) q = q.eq("member_id", myMemberId)
-    return q
+    return applyReminderScope(q, scopeFor(id))
   }
 
   const [{ data, error }, ...tabCountResults] = await Promise.all([
@@ -338,6 +373,17 @@ export default async function RemindersPage({
         defaultCollapsed={cookieStore.get(CHECKLIST_COLLAPSED_COOKIE)?.value === "1"}
       />
       <CoverageBanner coverage={coverage} />
+      {/* Above the card, not inside it: this is a fact about the whole engine,
+          not about whichever tab happens to be open. */}
+      <SendingStatusBanner
+        status={sendingStatus}
+        // Raw, including the -1 failure sentinel. Clamping it to 0 turned "we
+        // could not count" into "nothing is queued", which is the one thing
+        // this banner must never say when it does not know.
+        dueCount={tabCounts.get("due") ?? -1}
+        nextDueAt={nextDueAt}
+        timezone={timezone}
+      />
 
       <div className="rounded-xl border bg-background shadow-sm">
         {/* Wraps rather than scrolls. Four tabs plus their counts are wider
@@ -379,6 +425,27 @@ export default async function RemindersPage({
               </Link>
             )
           })}
+
+          {/* Clearing acts on the OPEN tab, so it sits with the tabs rather
+              than in the page header — and it carries that tab's own count, so
+              the number on the button is the number that disappears. */}
+          {/* Every active narrowing, not just the tab. With a view filter on,
+              "everything in Due" named 6 rows while the button cleared the 3
+              the filter had left — the count was right and the sentence was
+              wrong, which is the worse half to get wrong on a delete. */}
+          <ClearTabButton
+            scope={scopeFor(tab)}
+            count={Math.max(0, tabCounts.get(tab) ?? 0)}
+            label={[
+              TABS.find((t) => t.id === tab)?.label ?? "this tab",
+              view === "all" ? null : viewLabel,
+              mineActive ? "yours" : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+            paused={sendingStatus.state !== "live"}
+            maxOverdueDays={MAX_OVERDUE_DAYS}
+          />
 
           {/* Same row as the tabs, and the same selected treatment.
               It used to sit in the page header: two rows of pills 458px apart
@@ -446,9 +513,9 @@ export default async function RemindersPage({
                 : "Owner (unassigned)"
 
               return (
-                <li key={row.id} className="px-5 py-4">
+                <li key={row.id} className="group/row px-5 py-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <p className="flex flex-wrap items-center gap-2 text-sm font-medium">
                         {event ? (
                           <Link
@@ -478,6 +545,12 @@ export default async function RemindersPage({
                         <span>to {recipient}</span>
                       </p>
                     </div>
+                    {/* Always rendered, never hover-only: a control that
+                        appears on hover does not exist on a touch screen, and
+                        the operator opens this on a phone. */}
+                    <div className="shrink-0">
+                      <DeleteReminderButton id={row.id} />
+                    </div>
                   </div>
 
                   {row.suggestion && (
@@ -490,7 +563,13 @@ export default async function RemindersPage({
                   )}
 
                   {row.error && (
-                    <p className="mt-2 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                    // break-words because this is Meta's text, not ours, and
+                    // Meta puts URLs in it. #131042 arrives carrying a 190-char
+                    // billing link with no spaces, which has no break
+                    // opportunity and dragged the whole page to 791px wide
+                    // inside a 375px viewport — every row on the tab scrolling
+                    // sideways because of one error string.
+                    <p className="mt-2 rounded-lg bg-destructive/10 px-3 py-2 text-xs break-words text-destructive">
                       {row.error}
                     </p>
                   )}
