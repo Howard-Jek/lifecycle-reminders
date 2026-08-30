@@ -20,6 +20,8 @@ import { deriveSendingStatus } from "@/lib/lifecycle/sending-status"
 import { MAX_OVERDUE_DAYS } from "@/lib/lifecycle/plan-reminders"
 import { SendingStatusBanner } from "@/components/sending-status-banner"
 import { DeleteReminderButton, ClearTabButton } from "@/components/reminder-actions"
+import { SendReminderButton, SendTabButton } from "@/components/send-actions"
+import { MAX_PER_CLICK } from "@/lib/lifecycle/send-limits"
 
 export const metadata = { title: "Reminders" }
 
@@ -108,9 +110,9 @@ export default async function RemindersPage({
       loadEventFacts(admin, tenant.businessId),
       admin
         .from("businesses")
-        .select("timezone")
+        .select("timezone, auto_send_enabled")
         .eq("id", tenant.businessId)
-        .maybeSingle<{ timezone: string | null }>(),
+        .maybeSingle<{ timezone: string | null; auto_send_enabled: boolean | null }>(),
       admin
         .from("team_members")
         .select("id, display_name, auth_user_id")
@@ -179,7 +181,15 @@ export default async function RemindersPage({
         ? policiesLabel
         : (VIEWS.find((v) => v.id === view)?.label ?? "All")
 
-  const sendingStatus = deriveSendingStatus(lastRunRes.data?.ran_at ?? null)
+  /**
+   * Fails CLOSED on a read error: `?? false` means an unreadable flag reports
+   * "off". Claiming sending is on when we do not know would tell the operator
+   * their queue is being handled by something we cannot see.
+   */
+  const sendingStatus = deriveSendingStatus(
+    lastRunRes.data?.ran_at ?? null,
+    businessRes.data?.auto_send_enabled ?? false,
+  )
   const nextDueAt = nextDueRes.data?.due_at ?? null
 
   const timezone = businessRes.data?.timezone || "Asia/Singapore"
@@ -434,6 +444,24 @@ export default async function RemindersPage({
               "everything in Due" named 6 rows while the button cleared the 3
               the filter had left — the count was right and the sentence was
               wrong, which is the worse half to get wrong on a delete. */}
+          {/* Only Due and Needs attention. "Sent" would re-send messages that
+              already arrived, and "Upcoming" is not due yet — sending that
+              early is a different decision from clearing a backlog. */}
+          {(tab === "due" || tab === "attention") && (
+            <SendTabButton
+              scope={scopeFor(tab)}
+              count={Math.max(0, tabCounts.get(tab) ?? 0)}
+              label={[
+                TABS.find((t) => t.id === tab)?.label ?? "this tab",
+                view === "all" ? null : viewLabel,
+                mineActive ? "yours" : null,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+              maxPerClick={MAX_PER_CLICK}
+            />
+          )}
+
           <ClearTabButton
             scope={scopeFor(tab)}
             count={Math.max(0, tabCounts.get(tab) ?? 0)}
@@ -549,7 +577,10 @@ export default async function RemindersPage({
                     {/* Always rendered, never hover-only: a control that
                         appears on hover does not exist on a touch screen, and
                         the operator opens this on a phone. */}
-                    <div className="shrink-0">
+                    <div className="flex shrink-0 items-center gap-1">
+                      {/* Sending a row that already went out would deliver a
+                          second copy of a message the agent has read. */}
+                      {row.status !== "sent" && <SendReminderButton id={row.id} />}
                       <DeleteReminderButton id={row.id} />
                     </div>
                   </div>

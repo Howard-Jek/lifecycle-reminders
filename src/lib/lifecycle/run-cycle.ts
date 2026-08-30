@@ -117,7 +117,24 @@ export type CycleOptions = {
    * a hung deployment, which is exactly how it was reported.
    */
   maxDeliveries?: number
+  /**
+   * Deliver exactly these reminders, and ignore the auto-send flag.
+   *
+   * THE MANUAL PATH. `auto_send_enabled` gates the machine, not the person: an
+   * operator who has deliberately switched the scheduler off must still be able
+   * to send one reminder, or a tab's worth, by hand. That is the whole point of
+   * the buttons on the inbox — automatic sending being off is a policy about
+   * unattended sending, not a lock on the account.
+   *
+   * Also skips the `due_at <= now` filter. These rows were chosen by a human
+   * looking at them, which is a better authority on whether they should go out
+   * than a timestamp.
+   */
+  reminderIds?: string[]
 }
+
+/** Why a reminder was passed over without being touched. */
+export type DeliverySkip = { reminderId: string; reason: "agent_inactive" }
 
 export async function runReminderCycle(
   admin: SupabaseClient,
@@ -373,31 +390,106 @@ async function deliverDue(admin: SupabaseClient, options: CycleOptions = {}) {
     return { sent: 0, failed: 0, skipped: 0, senderUnconfigured: true }
   }
 
+  const manual = options.reminderIds !== undefined
   const nowIso = new Date().toISOString()
 
-  const { data, error } = await admin
+  let query = admin
     .from("reminders")
     .select("id, business_id, event_id, rule_id, occurrence_date, member_id, attempts")
     .eq("status", "queued")
-    .lte("due_at", nowIso)
     .lt("attempts", MAX_ATTEMPTS)
     .order("due_at", { ascending: true })
     .limit(Math.min(options.maxDeliveries ?? MAX_DELIVERIES_PER_RUN, MAX_DELIVERIES_PER_RUN))
+
+  if (manual) {
+    // A person picked these. No due_at filter and no auto-send gate — see
+    // CycleOptions.reminderIds.
+    const ids = options.reminderIds ?? []
+    if (ids.length === 0) return { sent: 0, failed: 0, skipped: 0 }
+    query = query.in("id", ids)
+  } else {
+    /**
+     * THE GATE. Businesses that have not switched automatic sending on are not
+     * queried at all.
+     *
+     * Checked here rather than in the route so that every driver — Vercel Cron,
+     * the GitHub workflow, scripts/tick.ts — is gated by the same line. The
+     * previous arrangement put the switch in deployment config, where turning
+     * off ONE of two schedulers looked like turning sending off and was not.
+     *
+     * An off tick costs exactly this query and returns. Nothing is claimed,
+     * nothing is drafted, nothing is billed.
+     */
+    const { data: enabled, error: gateError } = await admin
+      .from("businesses")
+      .select("id")
+      .eq("auto_send_enabled", true)
+
+    if (gateError) {
+      // Fail CLOSED. Not knowing whether sending is permitted must never
+      // resolve to sending.
+      console.error(`[lifecycle] auto-send gate unreadable, sending nothing: ${gateError.message}`)
+      return { sent: 0, failed: 0, skipped: 0 }
+    }
+
+    const ids = (enabled ?? []).map((b) => b.id as string)
+    if (ids.length === 0) {
+      console.log("[lifecycle] automatic sending is off everywhere — nothing to deliver")
+      return { sent: 0, failed: 0, skipped: 0 }
+    }
+    query = query.in("business_id", ids).lte("due_at", nowIso)
+  }
+
+  const { data, error } = await query
 
   if (error) {
     console.error(`[lifecycle] due reminders fetch failed: ${error.message}`)
     return { sent: 0, failed: 0, skipped: 0 }
   }
 
-  const due = (data ?? []) as DueRow[]
-  if (due.length === 0) return { sent: 0, failed: 0, skipped: 0 }
+  const candidates = (data ?? []) as DueRow[]
+  if (candidates.length === 0) return { sent: 0, failed: 0, skipped: 0 }
 
-  // Per-tenant context is reused across that tenant's reminders in this tick.
-  const tenantCache = new Map<string, Awaited<ReturnType<typeof loadDeliveryContext>>>()
+  /**
+   * Drop reminders addressed to a DEACTIVATED agent, before claiming them.
+   *
+   * A deactivated member reaches nobody by definition, so sending is a
+   * guaranteed waste of a billed message — and on this deployment that was not
+   * hypothetical: every one of the 69 rows sitting in "Needs attention" was
+   * addressed to one of three deactivated demo members.
+   *
+   * Filtered BEFORE the claim and left `queued`, deliberately. Marking them
+   * terminal would destroy real work over a reversible condition: reactivate
+   * the agent and their reminders simply flow again.
+   */
+  const contexts = new Map<string, Awaited<ReturnType<typeof loadDeliveryContext>>>()
+  for (const businessId of new Set(candidates.map((r) => r.business_id))) {
+    contexts.set(businessId, await loadDeliveryContext(admin, businessId))
+  }
+
+  const due: DueRow[] = []
+  let inactiveSkips = 0
+  for (const row of candidates) {
+    const member = row.member_id ? contexts.get(row.business_id)?.members.get(row.member_id) : null
+    if (member && !member.active) {
+      inactiveSkips++
+      continue
+    }
+    due.push(row)
+  }
+  if (inactiveSkips > 0) {
+    console.log(`[lifecycle] ${inactiveSkips} reminders held: their agent is deactivated`)
+  }
+
+  if (due.length === 0) return { sent: 0, failed: 0, skipped: inactiveSkips }
+
+  // Contexts were loaded above to resolve each row's member; reused here rather
+  // than fetched a second time.
+  const tenantCache = contexts
 
   let sent = 0
   let failed = 0
-  let skipped = 0
+  let skipped = inactiveSkips
   const startedAt = Date.now()
 
   for (const row of due) {

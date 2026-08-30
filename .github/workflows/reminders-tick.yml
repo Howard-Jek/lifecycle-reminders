@@ -19,25 +19,38 @@
 # is the same one Vercel Cron calls and the same function `scripts/tick.ts` runs
 # locally — swapping the driver changes no behaviour.
 #
-# THE VERCEL CRON WAS a daily backstop, and is currently REMOVED. Read this
-# before restoring either scheduler.
+# THE SWITCH IS NO LONGER THIS FILE.
 #
-# The backstop reasoning still holds: GitHub disables scheduled workflows in
-# repositories idle for 60 days, and a reminder engine that quietly stops is the
-# failure this whole product is about. It was removed anyway, deliberately and
-# temporarily, because the roster is still SEEDED DEMO DATA — three fabricated
-# Singapore numbers, each on two businesses — and roughly 2,300 reminders are
-# queued against them. Both schedulers off is the only thing standing between a
-# freshly-registered sending number and several hundred unsolicited WhatsApp
-# messages to strangers, which is how a business number gets banned.
+# This workflow was disabled, along with the Vercel cron, because turning the
+# schedulers off was the only way to stop sending — and that arrangement failed
+# in the way you would expect: disabling ONE of the two looked like switching
+# sending off, while the other went on firing for days. It also meant only
+# somebody with repository access could do it, and the app could not report the
+# true state to the person actually running the business.
 #
-# TO RESTORE, in this order and not before:
-#   1. Replace the demo roster numbers in team_members with real ones.
-#   2. Decide what happens to the queued backlog — it is mostly historical and
-#      probably wants clearing rather than sending.
-#   3. `gh workflow enable "Reminder tick"` (this file).
-#   4. Put the crons block back in vercel.json for the daily backstop:
-#      "crons": [{ "path": "/api/cron/process-reminders", "schedule": "0 1 * * *" }]
+# Sending is now gated on `businesses.auto_send_enabled`, checked inside
+# deliverDue — so every driver passes through it, including this one — and
+# defaulting to FALSE. A tick with the flag off costs one SELECT and sends
+# nothing. The operator turns it on and off from the Reminders page, and the
+# banner there reports which state it is actually in.
+#
+# So this workflow is safe to leave enabled. It is the heartbeat as well as the
+# driver: with it off, the inbox cannot distinguish a quiet queue from a stopped
+# engine, and `deriveSendingStatus` reports "on, but nothing is running" — which
+# is exactly what a disabled workflow should look like.
+#
+# STILL TRUE, and worth reading before switching sending ON:
+#   - The roster is largely SEEDED DEMO DATA — fabricated Singapore numbers on
+#     two businesses. Messages to them are billed and arrive nowhere. Reminders
+#     addressed to a DEACTIVATED member are held rather than sent, which covers
+#     the demo rows today, but an active row with a fake number is not covered.
+#   - The queued backlog is mostly historical and probably wants clearing.
+#   - The Vercel cron is still absent. It was a daily backstop for the case
+#     where GitHub disables scheduled workflows in dormant repositories. To
+#     restore it, put this back in vercel.json:
+#       "crons": [{ "path": "/api/cron/process-reminders", "schedule": "0 1 * * *" }]
+#     A once-daily run serves only the send window it lands on, so it is a
+#     backstop and not a substitute for this file.
 #
 # SETUP — two repository secrets, Settings → Secrets and variables → Actions:
 #   CRON_SECRET   the same value as the Vercel environment variable

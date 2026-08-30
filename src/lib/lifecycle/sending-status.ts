@@ -1,15 +1,32 @@
 /**
  * Is automatic sending actually running?
  *
- * Derived from the last recorded cycle rather than from configuration. The
- * schedulers live outside this app — a GitHub Actions workflow and a Vercel
- * cron — and either can be switched off without anything here being told. A
- * flag would go stale the first time that happened; a timestamp written by the
- * cycle itself cannot.
+ * TWO FACTS, not one, and conflating them is what this module exists to stop:
+ *
+ *   INTENT — `businesses.auto_send_enabled`, which the operator controls. Only
+ *   this can say "off". A missing heartbeat cannot: silence is not a decision.
+ *
+ *   EVIDENCE — the last cycle the engine actually recorded. Only this can say
+ *   "on and working". The flag cannot: the schedulers live OUTSIDE this app, in
+ *   a GitHub Actions workflow, and GitHub disables scheduled workflows in
+ *   dormant repositories without telling anyone.
+ *
+ * Which is why `stalled` is its own state and the most useful one here. Switched
+ * on, and nothing running: the operator believes messages are going out and
+ * they are not. Deriving state from the heartbeat alone reported that as
+ * "paused", which reads like a choice somebody made.
  */
 
 export type SendingStatus = {
-  state: "never" | "paused" | "live"
+  /**
+   * `off`     — the operator has it switched off. Nothing will be sent.
+   * `stalled` — switched ON, but no cycle has run recently. Something is wrong.
+   * `live`    — switched on and running.
+   */
+  state: "off" | "stalled" | "live"
+  /** True when nothing has ever run — a different thing to check from a
+   * scheduler that has stopped. */
+  neverRun: boolean
   /** ISO of the last recorded run, or null. */
   lastRunAt: string | null
   /** Whole minutes since that run. Null when there has never been one. */
@@ -32,20 +49,29 @@ export const STALE_AFTER_MINUTES = 90
 
 export function deriveSendingStatus(
   lastRunAt: string | null,
+  /** `businesses.auto_send_enabled`. The only thing that can report "off". */
+  autoSendEnabled: boolean,
   now: Date = new Date(),
 ): SendingStatus {
-  if (!lastRunAt) return { state: "never", lastRunAt: null, minutesSince: null }
+  const ran = lastRunAt ? new Date(lastRunAt) : null
+  // An unparseable timestamp is not evidence that anything ran.
+  const valid = ran && !Number.isNaN(ran.getTime()) ? ran : null
+  const minutesSince = valid
+    ? Math.max(0, Math.floor((now.getTime() - valid.getTime()) / 60000))
+    : null
 
-  const ran = new Date(lastRunAt)
-  if (Number.isNaN(ran.getTime())) {
-    // An unparseable timestamp is not evidence that anything ran.
-    return { state: "never", lastRunAt: null, minutesSince: null }
+  // Checked FIRST. Off is a decision, and it holds whatever the heartbeat says
+  // — including on a deployment where some other tenant's cycle is ticking
+  // along and writing runs this business must not be credited with.
+  if (!autoSendEnabled) {
+    return { state: "off", neverRun: valid === null, lastRunAt: valid ? lastRunAt : null, minutesSince }
   }
 
-  const minutesSince = Math.max(0, Math.floor((now.getTime() - ran.getTime()) / 60000))
+  const fresh = minutesSince !== null && minutesSince <= STALE_AFTER_MINUTES
   return {
-    state: minutesSince > STALE_AFTER_MINUTES ? "paused" : "live",
-    lastRunAt,
+    state: fresh ? "live" : "stalled",
+    neverRun: valid === null,
+    lastRunAt: valid ? lastRunAt : null,
     minutesSince,
   }
 }
