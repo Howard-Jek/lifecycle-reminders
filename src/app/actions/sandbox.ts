@@ -57,7 +57,26 @@ export async function listSandboxMessages(): Promise<SandboxRow[]> {
 export async function runTickNow(): Promise<ActionResult<CycleResult>> {
   await requireTenant()
   try {
-    const result = await runReminderCycle(createAdminClient())
+    /**
+     * SIMULATED, and bounded. This button used to call the cycle exactly as the
+     * cron does — same function, no options — on a page telling the operator
+     * that the two handsets were "stand-ins for messages that would otherwise
+     * leave the building". That was only ever true while REMINDER_DRY_RUN was
+     * set. Once credentials were configured and dry run was off, one click sent
+     * 21 real template messages to real numbers and billed for each.
+     *
+     * The demonstration value is unchanged: everything up to the Graph call
+     * still runs, so the transcript shows the real drafted text and the real
+     * clamped params. Only the network call is withheld.
+     *
+     * maxDeliveries because a cron may take four minutes and a button may not:
+     * a server action holding the page that long was reported, accurately, as a
+     * hung deployment.
+     */
+    const result = await runReminderCycle(createAdminClient(), "sandbox", {
+      simulateDelivery: true,
+      maxDeliveries: 25,
+    })
     revalidatePath("/sandbox")
     revalidatePath("/reminders")
     return { ok: true, data: result }

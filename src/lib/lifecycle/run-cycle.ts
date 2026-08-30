@@ -93,10 +93,37 @@ export type CycleResult = {
   skipped: number
 }
 
+export type CycleOptions = {
+  /**
+   * Exercise the whole delivery path but never reach WhatsApp.
+   *
+   * Exists because the Sandbox's "Run a tick now" button calls this same
+   * function — deliberately, so that a working button proves a working cron —
+   * and that button sat on a page promising the two handsets were "stand-ins
+   * for messages that would otherwise leave the building". That promise held
+   * only while REMINDER_DRY_RUN was set. With credentials configured and dry
+   * run off, one click put 21 real template messages on real handsets and
+   * billed for every one.
+   *
+   * A demonstration must not be able to send. This makes that structural
+   * rather than a property of whichever env var happens to be set.
+   */
+  simulateDelivery?: boolean
+  /**
+   * Stop after this many deliveries.
+   *
+   * The full run has a four-minute budget, which is correct for a cron and
+   * wrong for a button: a server action holding the page for minutes reads as
+   * a hung deployment, which is exactly how it was reported.
+   */
+  maxDeliveries?: number
+}
+
 export async function runReminderCycle(
   admin: SupabaseClient,
   /** Which driver invoked this: cron, github, or a local tick. */
   source = "cron",
+  options: CycleOptions = {},
 ): Promise<CycleResult> {
   // Reclaim rows a dead worker left 'claimed' — otherwise they are invisible
   // forever, because the delivery query only looks at 'queued'.
@@ -104,7 +131,7 @@ export async function runReminderCycle(
   if (requeued > 0) console.warn(`[lifecycle] requeued ${requeued} stuck reminder claims`)
 
   const materialised = await materialiseAll(admin)
-  const delivered = await deliverDue(admin)
+  const delivered = await deliverDue(admin, options)
 
   const result = { requeued, ...materialised, ...delivered }
   console.log("[lifecycle] cycle done", result)
@@ -320,7 +347,7 @@ type DueRow = {
   attempts: number
 }
 
-async function deliverDue(admin: SupabaseClient) {
+async function deliverDue(admin: SupabaseClient, options: CycleOptions = {}) {
   // Nothing can be delivered without a sender, so do not TOUCH the queue.
   //
   // The old behaviour resolved each due reminder to a terminal `skipped` on the
@@ -355,7 +382,7 @@ async function deliverDue(admin: SupabaseClient) {
     .lte("due_at", nowIso)
     .lt("attempts", MAX_ATTEMPTS)
     .order("due_at", { ascending: true })
-    .limit(MAX_DELIVERIES_PER_RUN)
+    .limit(Math.min(options.maxDeliveries ?? MAX_DELIVERIES_PER_RUN, MAX_DELIVERIES_PER_RUN))
 
   if (error) {
     console.error(`[lifecycle] due reminders fetch failed: ${error.message}`)
@@ -397,7 +424,7 @@ async function deliverDue(admin: SupabaseClient) {
         tenantCache.set(row.business_id, ctx)
       }
 
-      const outcome = await deliverOne(admin, row, ctx)
+      const outcome = await deliverOne(admin, row, ctx, options)
       if (outcome === "sent") sent++
       else if (outcome === "skipped") skipped++
       else failed++
@@ -451,6 +478,7 @@ async function deliverOne(
   admin: SupabaseClient,
   row: DueRow,
   ctx: Awaited<ReturnType<typeof loadDeliveryContext>>,
+  options: CycleOptions = {},
 ): Promise<"sent" | "failed" | "skipped"> {
   const { data: event } = await admin
     .from("contact_events")
@@ -529,7 +557,22 @@ async function deliverOne(
     deepLink: reminderDeepLink(appPublicUrl(), lead.id),
   }
 
-  const res = await sendClientEventReminder(to, alertParams)
+  /**
+   * The one place a simulated run stops.
+   *
+   * Placed HERE, at the Graph call, rather than earlier: everything above —
+   * materialising, claiming, resolving the member, drafting the opener,
+   * clamping the five template params — still runs exactly as production does,
+   * which is the entire value of a sandbox that shares the real code path. The
+   * only thing withheld is the network call that costs money and reaches a
+   * handset.
+   *
+   * The synthetic id is prefixed so it can never be mistaken for a Meta wamid
+   * by the webhook, the stuck-claim sweep, or anyone reading the table.
+   */
+  const res = options.simulateDelivery
+    ? ({ ok: true, whatsappMessageId: `sandbox:${crypto.randomUUID()}` } as const)
+    : await sendClientEventReminder(to, alertParams)
 
   if (!res.ok) {
     // "Not configured" is permanent for this deployment — do not burn retries

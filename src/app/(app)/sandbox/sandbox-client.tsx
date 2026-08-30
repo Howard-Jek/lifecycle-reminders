@@ -74,9 +74,10 @@ export function SandboxClient({
         <div className="min-w-0">
           <h1 className="text-2xl font-bold tracking-tight">Sandbox</h1>
           <p className="max-w-2xl text-sm text-muted-foreground">
-            The engine is real — this button calls the same cycle the cron calls, and the reminder
-            below is written by the same delivery path. Only the two handsets are stand-ins for
-            messages that would otherwise leave the building.
+            The engine is real — this button runs the same cycle the cron runs, drafts with the
+            same model and builds the same template params. The one thing it will not do is call
+            WhatsApp: deliveries here are simulated, so nothing reaches a handset and nothing is
+            billed, however this deployment is configured.
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
@@ -85,7 +86,7 @@ export function SandboxClient({
             onClick={() =>
               run(runTickNow, (data) => {
                 const r = data as { planned: number; inserted: number; sent: number; skipped: number }
-                return `Materialised ${r.inserted} new, delivered ${r.sent}, skipped ${r.skipped}.`
+                return `Materialised ${r.inserted} new, simulated ${r.sent} deliveries, skipped ${r.skipped}. Nothing was sent to WhatsApp.`
               })
             }
           >
@@ -126,10 +127,15 @@ export function SandboxClient({
       )}
 
       <div className="flex flex-wrap items-center gap-2 text-xs">
+        {/* The dry-run flag governs the CRON, not this page. It used to be
+            shown here as though it described the button beside it, which read
+            as a warning about the sandbox when it was a warning about
+            production — and the button was the more dangerous of the two. */}
+        <StatusChip ok okLabel="Sandbox sends are simulated — nothing reaches Meta" badLabel="" />
         <StatusChip
           ok={dryRun}
-          okLabel="Dry run on — nothing reaches Meta"
-          badLabel="Dry run OFF — sends are live"
+          okLabel="Scheduled sending: dry run on"
+          badLabel="Scheduled sending: live when a scheduler runs"
         />
         <StatusChip
           ok={senderConfigured}
