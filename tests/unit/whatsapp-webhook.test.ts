@@ -618,3 +618,50 @@ describe("the failure code survives as a value, not only as prose", () => {
     expect(failure([{ title: "no code here" }, { code: 130429 }])?.errorCode).toBe("130429")
   })
 })
+
+describe("a deferred receipt is actually looked at again", () => {
+  /**
+   * resolveFailedReceipt declines to guess about a wamid no reminder owns, on
+   * the stated grounds that the receipt is kept and attributed later. That was
+   * a forward reference to nothing: whatsapp_status_events had a writer and no
+   * reader anywhere in the repo, so the reason sat in a row nobody read while
+   * the reminder completed its send path and stayed `sent` — the exact bug the
+   * webhook exists to prevent, surviving in the one race it documents most
+   * carefully.
+   *
+   * Source-level because what is under test is that the wiring EXISTS.
+   */
+  const receipts = readFileSync(
+    join(process.cwd(), "src/lib/notify/reminder-receipts.ts"),
+    "utf8",
+  )
+  const runCycle = readFileSync(join(process.cwd(), "src/lib/lifecycle/run-cycle.ts"), "utf8")
+
+  it("reads the receipt log, not only writes it", () => {
+    expect(receipts).toMatch(/\.from\("whatsapp_status_events"\)\s*\n\s*\.select\(/)
+  })
+
+  it("only considers receipts that never found an owner", () => {
+    expect(receipts).toMatch(/\.is\("reminder_id", null\)/)
+  })
+
+  it("stamps what it resolves, so the sweep does not re-read it forever", () => {
+    expect(receipts).toMatch(/reminder_id: owner\.id/)
+  })
+
+  it("runs the sweep before delivery, not after", () => {
+    // After delivery, a row the sweep resolves to `failed` could have been
+    // claimed and sent again in the same pass.
+    const cycle = runCycle.slice(runCycle.indexOf("export async function runReminderCycle("))
+    const sweepAt = cycle.indexOf("attributeOrphanReceipts(")
+    const deliverAt = cycle.indexOf("deliverDue(admin, options)")
+    expect(sweepAt).toBeGreaterThan(-1)
+    expect(sweepAt).toBeLessThan(deliverAt)
+  })
+
+  it("reuses the live path's own functions rather than a second implementation", () => {
+    const sweep = receipts.slice(receipts.indexOf("export async function attributeOrphanReceipts("))
+    expect(sweep).toMatch(/loadReceiptOwners\(/)
+    expect(sweep).toMatch(/recordFailedSends\(/)
+  })
+})

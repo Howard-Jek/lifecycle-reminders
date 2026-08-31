@@ -107,11 +107,16 @@ export function resolveFailedReceipt(
    * committing.
    *
    * They are indistinguishable here, so this does not guess. Nothing is lost
-   * by waiting: recordStatusEvents keeps every receipt, wamid and all, so the
-   * reason survives in whatsapp_status_events and can be attributed later
-   * once the wamid exists. Answering Meta with a 500 to force a redelivery
-   * would be a guess, and a wrong guess on a genuinely foreign wamid earns
-   * retries on every payload and eventually a disabled webhook.
+   * by waiting: recordStatusEvents keeps every receipt, wamid and all, and
+   * attributeOrphanReceipts (src/lib/notify/reminder-receipts.ts) looks again
+   * at the top of every cycle, once the wamid exists. That sweep is what makes
+   * this skip a deferral rather than a drop — if it is ever removed, this
+   * comment becomes a lie and a whole class of failures goes back to sitting
+   * on `sent` forever.
+   *
+   * Answering Meta with a 500 to force a redelivery would be a guess instead,
+   * and a wrong guess on a genuinely foreign wamid earns retries on every
+   * payload and eventually a disabled webhook.
    */
   if (!owner) return { action: "skip", reason: "unowned" }
 

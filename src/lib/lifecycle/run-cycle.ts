@@ -35,6 +35,7 @@ import {
 } from "./claim-reminder"
 import { todayInTimezone, daysBetween } from "./occurrence"
 import { planRetry, describeGiveUp, MAX_ATTEMPTS, PERMANENT_FAILURE } from "./retry-policy"
+import { attributeOrphanReceipts } from "@/lib/notify/reminder-receipts"
 import { isRetryableFailure } from "@/lib/whatsapp-errors"
 import { humaniseEventType } from "./labels"
 import { draftSuggestion, fallbackSuggestion } from "./suggest-message"
@@ -144,6 +145,11 @@ export async function runReminderCycle(
   // forever, because the delivery query only looks at 'queued'.
   const requeued = await requeueStuckClaims(admin, 30, MAX_ATTEMPTS)
   if (requeued > 0) console.warn(`[lifecycle] requeued ${requeued} stuck reminder claims`)
+
+  // Failures Meta reported before we had finished writing down the message id
+  // they belong to. Runs BEFORE delivery so a row it resolves to `failed` is
+  // not claimed and sent again in the same pass.
+  await attributeOrphanReceipts(admin)
 
   const materialised = await materialiseAll(admin)
   const delivered = await deliverDue(admin, options)

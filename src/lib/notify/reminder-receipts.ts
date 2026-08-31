@@ -225,3 +225,115 @@ export async function recordStatusEvents(
   }
   return data?.length ?? 0
 }
+
+/**
+ * How far back to look for a receipt that arrived before its reminder existed.
+ *
+ * Generous relative to the race it covers — that window is milliseconds — but
+ * the sweep is cheap, and a bound is what stops it rescanning years of
+ * permanently-unattributable receipts every fifteen minutes. Test sends and
+ * messages from outside the queue never match a reminder, so without a horizon
+ * they accumulate forever as work that can never complete.
+ */
+const ORPHAN_HORIZON_MS = 7 * 24 * 60 * 60 * 1000
+
+/**
+ * Apply failure receipts that had no reminder to land on when they arrived.
+ *
+ * The gap this closes: `sendClientEventReminder` returns a wamid, and
+ * `stampDelivered` writes it in the very next statement — but Meta can deliver
+ * a failure callback in between. The webhook then finds no row owning that
+ * wamid, and recordFailedSends correctly declines to guess, because a receipt
+ * for an unknown wamid is indistinguishable from a test send or a message
+ * from outside the queue.
+ *
+ * Declining to guess is only defensible if something looks again once the wamid
+ * DOES exist. That was the argument in resolveFailedReceipt and, until this
+ * function, it was a forward reference to nothing: `whatsapp_status_events` had
+ * a writer and no reader anywhere, so the reason was kept in a row nobody read
+ * while the reminder itself completed its send path and sat on `sent` forever —
+ * the exact bug the webhook exists to prevent, surviving in the one race
+ * everything else was written to handle.
+ *
+ * Idempotent by construction: it only considers receipts with a null
+ * `reminder_id`, and stamps that column on everything it resolves, so a row is
+ * examined once. Rows that never find an owner age out of the horizon instead.
+ *
+ * Best-effort. It runs at the top of the cycle and must never stop a delivery
+ * run — a receipt that waits one more tick costs nothing, and this is a
+ * recovery path, not the primary one.
+ */
+export async function attributeOrphanReceipts(admin: Admin, now: Date = new Date()): Promise<number> {
+  const since = new Date(now.getTime() - ORPHAN_HORIZON_MS).toISOString()
+
+  const { data: orphans, error: readErr } = await admin
+    .from("whatsapp_status_events")
+    .select("id, wamid, status, error, error_code")
+    .eq("status", "failed")
+    .is("reminder_id", null)
+    .gte("received_at", since)
+    .limit(200)
+
+  if (readErr) {
+    console.error(`[reminder-receipts] orphan receipt sweep failed: ${readErr.message}`)
+    return 0
+  }
+  if (!orphans || orphans.length === 0) return 0
+
+  const statuses: StatusEvent[] = orphans.map((row) => ({
+    wamid: row.wamid as string,
+    status: "failed",
+    error: (row.error as string | null) ?? null,
+    errorCode: (row.error_code as string | null) ?? null,
+    recipient: null,
+    occurredAt: null,
+  }))
+
+  // Deliberately the SAME two functions the live path uses, so a receipt
+  // recovered here is treated identically to one that arrived in time —
+  // including the retry decision. A second implementation would drift.
+  const owners = await loadReceiptOwners(admin, statuses)
+  if (owners.size === 0) return 0
+
+  const applied = await recordFailedSends(admin, statuses, owners)
+
+  /**
+   * Stamp the ones that found an owner, whether or not the reminder row was
+   * still in a state worth updating.
+   *
+   * Attribution is a fact about the wamid and does not expire. If the reminder
+   * has since moved on, the right outcome is still "we know whose this was, and
+   * we are not going to look again" — otherwise every sweep re-reads it until
+   * the horizon, and the sweep stops being idempotent in the way its own
+   * `reminder_id IS NULL` filter promises.
+   *
+   * One statement per wamid rather than one per row: a message produces several
+   * receipts and they all belong to the same reminder, so this is bounded by
+   * distinct messages, not by events.
+   */
+  let stamped = 0
+  for (const [wamid, owner] of owners) {
+    const { error: stampErr } = await admin
+      .from("whatsapp_status_events")
+      .update({ reminder_id: owner.id, business_id: owner.businessId })
+      .eq("wamid", wamid)
+      .is("reminder_id", null)
+    if (stampErr) {
+      // Loud, because an unstamped receipt is re-swept every tick until the
+      // horizon. Not fatal: recordFailedSends already did the work that
+      // mattered, and its write is guarded against being applied twice.
+      console.error(`[reminder-receipts] could not attribute ${wamid}: ${stampErr.message}`)
+    } else {
+      stamped++
+    }
+  }
+
+  if (applied > 0 || stamped > 0) {
+    console.warn(
+      `[reminder-receipts] recovered ${applied} reminder(s) from ${stamped} late-attributed ` +
+        `receipt(s) — these failures beat their own wamid being stamped`,
+    )
+  }
+
+  return applied
+}
