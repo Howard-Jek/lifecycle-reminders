@@ -12,6 +12,9 @@
  * answer between any two of them.
  */
 
+import { isRetryableFailure } from "@/lib/whatsapp-errors"
+import { planRetry } from "./retry-policy"
+
 /**
  * The states a delivery receipt is allowed to overwrite.
  *
@@ -37,14 +40,48 @@ export type FailureReceipt = {
   errorCode: string | null
 }
 
-/** The reminder that owns the wamid, as it stands right now. */
+/**
+ * The reminder that owns the wamid, as it stands right now.
+ *
+ * Everything planRetry needs travels with it, so the retry decision costs no
+ * extra round trip: the webhook is already reading this row to find out whose
+ * receipt this is, and event type and timezone come along as embeds on that
+ * same query.
+ */
 export type ReceiptOwner = {
   id: string
   status: string
+  /**
+   * Attempts already burnt. NOT +1 here, unlike the delivery loop: the claim
+   * incremented this before the send, and the send has already happened. Adding
+   * one again would skip a backoff step every time.
+   */
+  attempts: number
+  /** The date the reminder is about, YYYY-MM-DD. */
+  occurrenceDate: string
+  /** Null when the event row has been deleted. */
+  eventType: string | null
+  /** The business's zone — occurrence dates are calendar dates in it. */
+  timezone: string
 }
 
 export type FailedReceiptVerdict =
-  | { action: "record"; reminderId: string; error: string; errorCode: string | null }
+  | {
+      action: "record"
+      reminderId: string
+      error: string
+      errorCode: string | null
+      /**
+       * When to try again, or null to leave the row failed for a human.
+       *
+       * Non-null means the row goes back to `queued` rather than staying
+       * `failed`. That symmetry is the point: a send that fails inside the
+       * Graph call is retried, and until now the SAME failure arriving 200ms
+       * later as a receipt was terminal. One outcome decided by whether Meta
+       * answered before or after our HTTP call returned.
+       */
+      retryAt: string | null
+    }
   | { action: "skip"; reason: "not-a-failure" | "unowned" | "already-resolved" }
 
 /**
@@ -58,6 +95,7 @@ const NO_REASON_GIVEN = "WhatsApp reported the message as failed"
 export function resolveFailedReceipt(
   receipt: FailureReceipt,
   owner: ReceiptOwner | null,
+  now: Date = new Date(),
 ): FailedReceiptVerdict {
   if (receipt.status !== "failed") return { action: "skip", reason: "not-a-failure" }
 
@@ -81,10 +119,35 @@ export function resolveFailedReceipt(
     return { action: "skip", reason: "already-resolved" }
   }
 
+  /**
+   * Two gates, and both have to open.
+   *
+   * isRetryableFailure asks whether repeating this exact send could ever work —
+   * a rate limit yes, a handset that is not on WhatsApp no. planRetry then asks
+   * whether it is worth doing: not for a birthday, not past the date it is
+   * about, not past the attempt cap.
+   *
+   * The first gate is what makes the second safe to reach. Without it a number
+   * Meta has already refused would burn every remaining attempt, billed, to
+   * learn what the first attempt already said.
+   */
+  let retryAt: string | null = null
+  if (isRetryableFailure(receipt.errorCode, receipt.error)) {
+    const plan = planRetry({
+      eventType: owner.eventType,
+      attemptsBurnt: owner.attempts,
+      occurrenceDate: owner.occurrenceDate,
+      now,
+      timezone: owner.timezone,
+    })
+    if (plan.retry) retryAt = plan.nextAttemptAt
+  }
+
   return {
     action: "record",
     reminderId: owner.id,
     error: receipt.error ?? NO_REASON_GIVEN,
     errorCode: receipt.errorCode,
+    retryAt,
   }
 }

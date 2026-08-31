@@ -26,6 +26,12 @@ const receipt = (over: Partial<Parameters<typeof resolveFailedReceipt>[0]> = {})
 const owner = (over: Partial<ReceiptOwner> = {}): ReceiptOwner => ({
   id: "r1",
   status: "sent",
+  attempts: 1,
+  // Far enough ahead that the backoff never overshoots it, so these cases test
+  // the receipt logic rather than the deadline rule (which retry-policy owns).
+  occurrenceDate: "2099-01-01",
+  eventType: "policy_expiry",
+  timezone: "Asia/Singapore",
   ...over,
 })
 
@@ -36,6 +42,9 @@ describe("resolveFailedReceipt", () => {
       reminderId: "r1",
       error: "[131047] Re-engagement message",
       errorCode: "131047",
+      // 131047 wants an approved template, which a reminder already sends —
+      // so repeating it identically fails identically. Not retryable.
+      retryAt: null,
     })
   })
 
@@ -98,5 +107,79 @@ describe("resolveFailedReceipt", () => {
     // Pinned so widening this set is a deliberate edit with a test to argue
     // with, not a quiet change of who wins a race.
     expect([...RESOLVABLE_FROM_RECEIPT]).toEqual(["sent", "claimed"])
+  })
+})
+
+describe("a receipt failure is retried on the same terms as a send failure", () => {
+  /**
+   * The asymmetry this closes: a send that failed inside the Graph call was
+   * retried with a backoff, and the SAME failure arriving 200ms later as a
+   * delivery receipt was terminal. Which one you got depended on whether Meta
+   * answered before or after our HTTP call returned.
+   */
+  const now = new Date("2026-09-01T02:00:00Z")
+
+  it("schedules another attempt for a failure that can pass on its own", () => {
+    const v = resolveFailedReceipt(
+      receipt({ error: "[130429] rate limited", errorCode: "130429" }),
+      owner({ attempts: 1 }),
+      now,
+    )
+    expect(v).toMatchObject({ action: "record" })
+    if (v.action === "record") expect(v.retryAt).not.toBeNull()
+  })
+
+  it("refuses to retry a number Meta says cannot receive", () => {
+    // Three billed sends to learn what the first attempt already said.
+    const v = resolveFailedReceipt(
+      receipt({ error: "[131026] not on WhatsApp", errorCode: "131026" }),
+      owner({ attempts: 1 }),
+      now,
+    )
+    if (v.action === "record") expect(v.retryAt).toBeNull()
+  })
+
+  it("never retries a personal date, whatever the code says", () => {
+    // A birthday greeting on the wrong day is worse than none at all, so the
+    // schedule refuses even when the failure itself is transient.
+    const v = resolveFailedReceipt(
+      receipt({ errorCode: "130429" }),
+      owner({ eventType: "birthday", attempts: 1 }),
+      now,
+    )
+    if (v.action === "record") expect(v.retryAt).toBeNull()
+  })
+
+  it("stops when the attempts are gone", () => {
+    const v = resolveFailedReceipt(
+      receipt({ errorCode: "130429" }),
+      owner({ attempts: 99 }),
+      now,
+    )
+    if (v.action === "record") expect(v.retryAt).toBeNull()
+  })
+
+  it("does not retry past the date the reminder is about", () => {
+    // "Your policy expired" delivered after it expired is a complaint.
+    const v = resolveFailedReceipt(
+      receipt({ errorCode: "130429" }),
+      owner({ attempts: 1, occurrenceDate: "2026-09-01" }),
+      now,
+    )
+    if (v.action === "record") expect(v.retryAt).toBeNull()
+  })
+
+  it("counts the attempt that just failed without double-counting it", () => {
+    // The claim incremented `attempts` before the send and the send has already
+    // happened, so this path passes attempts straight through. Adding one — as
+    // the delivery loop correctly does — would skip a backoff step every time.
+    const first = resolveFailedReceipt(receipt({ errorCode: "130429" }), owner({ attempts: 1 }), now)
+    const second = resolveFailedReceipt(receipt({ errorCode: "130429" }), owner({ attempts: 2 }), now)
+    if (first.action === "record" && second.action === "record") {
+      expect(first.retryAt).not.toBeNull()
+      expect(second.retryAt).not.toBeNull()
+      // Backoff widens: 1 day, then 3.
+      expect(new Date(second.retryAt!).getTime()).toBeGreaterThan(new Date(first.retryAt!).getTime())
+    }
   })
 })

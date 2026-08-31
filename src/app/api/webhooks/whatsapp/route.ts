@@ -139,6 +139,9 @@ export async function POST(request: Request) {
 
 type Admin = ReturnType<typeof createAdminClient>
 
+/** Matches run-cycle's fallback, so the two paths date things the same way. */
+const DEFAULT_TIMEZONE = "Asia/Singapore"
+
 type ReceiptOwners = Map<string, ReceiptOwner & { businessId: string }>
 
 /**
@@ -153,9 +156,16 @@ type ReceiptOwners = Map<string, ReceiptOwner & { businessId: string }>
 async function loadReceiptOwners(admin: Admin, statuses: StatusEvent[]): Promise<ReceiptOwners> {
   if (statuses.length === 0) return new Map()
 
+  // The embeds carry everything the retry decision needs, so deciding costs no
+  // extra round trip inside Meta's ~20s budget. `businesses` is the tenant's
+  // timezone because an occurrence date is a calendar date in THEIR zone;
+  // `contact_events` is the event type, because a birthday is never retried.
   const { data, error } = await admin
     .from("reminders")
-    .select("id, business_id, status, whatsapp_message_id")
+    .select(
+      "id, business_id, status, attempts, occurrence_date, whatsapp_message_id, " +
+        "contact_events(event_type), businesses(timezone)",
+    )
     .in(
       "whatsapp_message_id",
       statuses.map((s) => s.wamid),
@@ -163,10 +173,32 @@ async function loadReceiptOwners(admin: Admin, statuses: StatusEvent[]): Promise
 
   if (error) throw new Error(`resolving receipt owners: ${error.message}`)
 
+  type OwnerRow = {
+    id: string
+    business_id: string
+    status: string
+    attempts: number
+    occurrence_date: string
+    whatsapp_message_id: string
+    contact_events: { event_type: string } | null
+    businesses: { timezone: string } | null
+  }
+
   return new Map(
-    (data ?? []).map((r) => [
-      r.whatsapp_message_id as string,
-      { id: r.id as string, status: r.status as string, businessId: r.business_id as string },
+    ((data ?? []) as unknown as OwnerRow[]).map((r) => [
+      r.whatsapp_message_id,
+      {
+        id: r.id,
+        status: r.status,
+        businessId: r.business_id,
+        attempts: r.attempts,
+        occurrenceDate: r.occurrence_date,
+        eventType: r.contact_events?.event_type ?? null,
+        // A missing tenant row cannot happen — business_id is NOT NULL with a
+        // foreign key — but the embed is typed nullable, and guessing UTC here
+        // would shift the "past the occurrence date" test by a day at +08:00.
+        timezone: r.businesses?.timezone ?? DEFAULT_TIMEZONE,
+      },
     ]),
   )
 }
@@ -219,7 +251,24 @@ async function recordFailedSends(
 
     const { data, error } = await admin
       .from("reminders")
-      .update({ status: "failed", error: verdict.error, error_code: verdict.errorCode })
+      .update({
+        error: verdict.error,
+        error_code: verdict.errorCode,
+        ...(verdict.retryAt
+          ? {
+              status: "queued",
+              next_attempt_at: verdict.retryAt,
+              claimed_at: null,
+              // Cleared, and load-bearing. requeueStuckClaims only rescues a
+              // stuck row whose wamid is NULL — it reads a wamid as "the send
+              // succeeded and only the bookkeeping failed". Leaving the old id
+              // on a requeued row makes it unrescuable if the next attempt dies
+              // mid-flight. The receipt keeps its own copy of the wamid in
+              // whatsapp_status_events, so nothing is lost by dropping it here.
+              whatsapp_message_id: null,
+            }
+          : { status: "failed" }),
+      })
       .eq("id", verdict.reminderId)
       // Re-asserted at the write, not merely checked in the verdict above: the
       // row can move between the read and this update, and the whole point of

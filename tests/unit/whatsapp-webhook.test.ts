@@ -565,6 +565,14 @@ describe("a delivery failure is written where the row can still be reached", () 
     expect(failedSends).toMatch(/resolveFailedReceipt\(/)
   })
 
+  it("clears the wamid when it sends a row back to the queue", () => {
+    // requeueStuckClaims only rescues a stuck row whose wamid is NULL — it
+    // reads a wamid as "the send succeeded, only the bookkeeping failed".
+    // Leaving the old id on a requeued row makes it unrescuable if the next
+    // attempt dies mid-flight, which is a permanent stall with no symptom.
+    expect(failedSends).toMatch(/whatsapp_message_id:\s*null/)
+  })
+
   it("resolves wamid ownership exactly once for the whole payload", () => {
     // Two lookups can disagree, and a receipt logged against a reminder it was
     // not applied to is worse than no record at all.
