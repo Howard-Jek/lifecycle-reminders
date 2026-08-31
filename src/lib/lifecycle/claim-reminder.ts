@@ -106,14 +106,45 @@ export async function stampDelivered(
   }
 }
 
-/** Record a delivered reminder. */
+/**
+ * What happened to the bookkeeping write, which is not the same question as
+ * "did the message go out". The message went out either way — this is only
+ * about whether this run got to be the one that recorded it.
+ */
+export type MarkSentOutcome =
+  /** This run owned the row and wrote `sent`. */
+  | "recorded"
+  /** Something else resolved the row first — see markReminderSent's note. */
+  | "superseded"
+  /** The write itself failed; the stuck-claim sweep is the safety net. */
+  | "error"
+
+/**
+ * Record a delivered reminder.
+ *
+ * `.eq("status", "claimed")` is not defensive padding — it closes a live race.
+ * Between stampDelivered() above and this write, Meta can deliver a `failed`
+ * status callback for the very wamid we just stamped, and the webhook
+ * (recordFailedSends) resolves the row to `failed` with Meta's reason on it.
+ * Without the predicate this update would then flip that row back to `sent`
+ * and blank its `error` — erasing the only explanation of the failure anyone
+ * will ever get, and parking a reminder that was never received on the "sent"
+ * tab where nobody looks at it again.
+ *
+ * Scoping the write to the state this run actually left the row in makes the
+ * later writer win, which is right: it knows something this one does not.
+ *
+ * `superseded` is therefore a normal outcome, not an error. It is reported
+ * separately so the caller can say so rather than logging "could not be
+ * recorded" about a row that was recorded, accurately, as failed.
+ */
 export async function markReminderSent(
   admin: SupabaseClient,
   reminderId: string,
   whatsappMessageId: string,
   suggestion: string,
-): Promise<boolean> {
-  const { error } = await admin
+): Promise<MarkSentOutcome> {
+  const { data, error } = await admin
     .from("reminders")
     .update({
       status: "sent",
@@ -123,12 +154,15 @@ export async function markReminderSent(
       error: null,
     })
     .eq("id", reminderId)
+    .eq("status", "claimed")
+    .select("id")
+    .maybeSingle()
 
   if (error) {
     console.error(`[lifecycle] mark-sent failed for reminder ${reminderId}: ${error.message}`)
-    return false
+    return "error"
   }
-  return true
+  return data ? "recorded" : "superseded"
 }
 
 /**

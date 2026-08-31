@@ -691,9 +691,19 @@ async function deliverOne(
   await stampDelivered(admin, row.id, res.whatsappMessageId)
 
   const recorded = await markReminderSent(admin, row.id, res.whatsappMessageId, suggestion)
-  if (!recorded) {
+  if (recorded === "error") {
     console.error(
       `[lifecycle] reminder ${row.id} delivered (${res.whatsappMessageId}) but could not be recorded`,
+    )
+  } else if (recorded === "superseded") {
+    // A delivery receipt resolved this row while the send was still in flight
+    // — Meta answered faster than our own bookkeeping. Its verdict and its
+    // reason are already on the row and must stay there, so this is a note,
+    // not an error. Reporting it as "could not be recorded" would send someone
+    // hunting a bug in the write path that is not there.
+    console.warn(
+      `[lifecycle] reminder ${row.id} (${res.whatsappMessageId}) was resolved by a delivery ` +
+        `receipt mid-send — keeping that verdict`,
     )
   }
 

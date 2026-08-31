@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { claimReminder } from "@/lib/lifecycle/claim-reminder"
+import { claimReminder, markReminderSent } from "@/lib/lifecycle/claim-reminder"
 import { buildIcsFeed, escapeIcsText, foldIcsLine } from "@/lib/lifecycle/ics"
 import { todayInTimezone, daysBetween } from "@/lib/lifecycle/occurrence"
 import { describeLeadTime, buildReminderComponents } from "@/lib/notify/client-event-reminder"
@@ -53,6 +53,63 @@ describe("claimReminder", () => {
     const { admin, calls } = stubClaim({ id: "r1" })
     await claimReminder(admin, "r1", 2)
     expect(calls[0]).toMatchObject({ attempts: 3 })
+  })
+})
+
+// ── mark sent ───────────────────────────────────────────────────────────────
+// The other half of the at-most-once story, and the half the webhook depends
+// on: a delivery receipt can mark a row `failed` in the window between
+// stampDelivered() and this write. Without a status predicate this update
+// would flip that `failed` straight back to `sent`, and the failure — the only
+// explanation the operator will ever get — would be erased by a later write
+// that knows nothing about it.
+
+function stubMarkSent(row: { id: string } | null, error: { message: string } | null = null) {
+  const calls: Record<string, unknown>[] = []
+  const eqs: Array<[string, unknown]> = []
+  const chain = {
+    update(patch: Record<string, unknown>) {
+      calls.push(patch)
+      return this
+    },
+    eq(col: string, val: unknown) {
+      eqs.push([col, val])
+      return this
+    },
+    select() {
+      return this
+    },
+    maybeSingle: () => Promise.resolve({ data: row, error }),
+  }
+  const admin = { from: () => chain } as unknown as SupabaseClient
+  return { admin, calls, eqs }
+}
+
+describe("markReminderSent", () => {
+  it("records the send, scoped to the row this run still holds", async () => {
+    const { admin, calls, eqs } = stubMarkSent({ id: "r1" })
+    expect(await markReminderSent(admin, "r1", "wamid.1", "hi")).toBe("recorded")
+    expect(calls[0]).toMatchObject({
+      status: "sent",
+      whatsapp_message_id: "wamid.1",
+      suggestion: "hi",
+      error: null,
+    })
+    // The predicate is the whole point: without it this write clobbers a
+    // `failed` the webhook set while the send was in flight.
+    expect(eqs).toContainEqual(["status", "claimed"])
+  })
+
+  it("reports superseded when the row is no longer claimed", async () => {
+    // Exactly the race: Meta's failure receipt beat this write, the webhook
+    // set `failed`, and this update must now match nothing and say so.
+    const { admin } = stubMarkSent(null)
+    expect(await markReminderSent(admin, "r1", "wamid.1", "hi")).toBe("superseded")
+  })
+
+  it("distinguishes a database error from a superseded row", async () => {
+    const { admin } = stubMarkSent(null, { message: "boom" })
+    expect(await markReminderSent(admin, "r1", "wamid.1", "hi")).toBe("error")
   })
 })
 
