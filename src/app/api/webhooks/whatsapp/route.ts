@@ -106,11 +106,21 @@ export async function POST(request: Request) {
     // owns this wamid — and asking twice lets them answer it differently, which
     // is how a receipt gets logged against a reminder it was not applied to.
     const owners = await loadReceiptOwners(admin, statuses)
-    const [failed, stored, recorded] = await Promise.all([
+    // allSettled, not all: with `all` a second concurrent rejection is
+    // discarded, so an operator fixes what the log named, redeploys, and hits
+    // the other one with an identical 500 and nothing to say it had changed.
+    const settled = await Promise.allSettled([
       recordFailedSends(admin, statuses, owners),
       storeInboundMessages(admin, messages),
       recordStatusEvents(admin, statuses, owners),
     ])
+    const reasons = settled.flatMap((r) => (r.status === "rejected" ? [r.reason] : []))
+    if (reasons.length > 0) {
+      throw new AggregateError(reasons, reasons.map((r) => String(r)).join("; "))
+    }
+    const [failed, stored, recorded] = settled.map((r) =>
+      r.status === "fulfilled" ? r.value : 0,
+    ) as [number, number, number]
     return NextResponse.json({
       ok: true,
       statuses: statuses.length,

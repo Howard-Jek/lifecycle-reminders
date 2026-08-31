@@ -75,6 +75,28 @@ describe("describeWhatsappError", () => {
   })
 })
 
+describe("matched", () => {
+  it("is true only when a code was recognised", () => {
+    expect(describeWhatsappError("131026", null).matched).toBe(true)
+    expect(describeWhatsappError(null, "(#131047) x").matched).toBe(true)
+  })
+
+  it("is false for the failures that never reached WhatsApp", () => {
+    // The reason this flag exists: "Needs attention" also holds "contact no
+    // longer exists" and "Delivery was interrupted…", and rendering WhatsApp
+    // guidance over those sends the operator to check a fine phone number.
+    for (const text of [
+      "contact event no longer exists",
+      "no recipient number configured",
+      "Delivery was interrupted, and a personal date is not sent late.",
+      "Worker stopped mid-delivery and no attempts remain.",
+    ]) {
+      expect(describeWhatsappError(null, text).matched, text).toBe(false)
+    }
+    expect(describeWhatsappError("999999", null).matched).toBe(false)
+  })
+})
+
 describe("isRetryableFailure", () => {
   it("refuses to retry a number that will never receive", () => {
     // This is the flag's whole reason for existing: three billed sends against

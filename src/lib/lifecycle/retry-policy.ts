@@ -160,11 +160,17 @@ function instantOnLocalDate(targetDate: string, timezone: string): Date {
 /**
  * How many further attempts this row can still get.
  *
- * MAX_ATTEMPTS is the ceiling from the backoff array alone, and the inbox was
- * rendering it as "attempt 2 of 4" — which is only true for a reminder with a
- * long lead time. The deadline bites first whenever the remaining steps would
- * overshoot the occurrence date, so a row due the day before its policy expires
- * has ONE attempt left while the badge promised three.
+ * NOT USED BY ANY SCREEN IN THIS REPO YET. It came across with the retry policy
+ * from claude/whatsapp-webhook-validation-tswrys, where the inbox renders an
+ * attempts badge; that badge was deliberately left on that branch. Kept because
+ * it is the correct arithmetic for the badge when it lands, and because getting
+ * it wrong is the kind of thing that reads as fine:
+ *
+ * MAX_ATTEMPTS is the ceiling from the backoff array alone, and a badge reading
+ * "attempt 2 of 4" is only true for a reminder with a long lead time. The
+ * deadline bites first whenever the remaining steps would overshoot the
+ * occurrence date, so a row due the day before its policy expires has ONE
+ * attempt left while a naive badge promises three.
  *
  * The clock advances with each granted step rather than being measured from
  * now: attempt three does not happen one day from today, it happens one day

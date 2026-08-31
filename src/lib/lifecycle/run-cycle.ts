@@ -455,10 +455,20 @@ async function deliverDue(admin: SupabaseClient, options: CycleOptions = {}) {
       .eq("auto_send_enabled", true)
 
     if (gateError) {
-      // Fail CLOSED. Not knowing whether sending is permitted must never
-      // resolve to sending.
-      console.error(`[lifecycle] auto-send gate unreadable, sending nothing: ${gateError.message}`)
-      return { sent: 0, failed: 0, skipped: 0 }
+      /**
+       * Fail CLOSED and LOUD. Throwing also sends nothing, so the closed
+       * property is kept — what changes is that the cycle stops claiming it
+       * succeeded.
+       *
+       * Returning zeros here was worse than the queue-read case below, because
+       * it fails EARLIER: runReminderCycle returned normally, the heartbeat row
+       * was written, the cron answered 200 ok:true, the workflow went green and
+       * the in-app banner said `live`. Every observable in the system reported
+       * health while nothing had been delivered for as long as the condition
+       * lasted. This filters on a column, so it is vulnerable to exactly the
+       * hand-applied-migration drift the throw below is written for.
+       */
+      throw new Error(`could not read the auto-send gate: ${gateError.message}`)
     }
 
     const ids = (enabled ?? []).map((b) => b.id as string)

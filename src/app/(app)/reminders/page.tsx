@@ -612,7 +612,14 @@ export default async function RemindersPage({
                        evidence. */
                     <div className="mt-2 rounded-lg bg-destructive/10 px-3 py-2 text-destructive">
                       {(() => {
+                        // Only when a code was actually recognised. This tab
+                        // also holds failures that never reached WhatsApp — a
+                        // deleted contact, no recipient number, an interrupted
+                        // birthday — and telling somebody to go and check a
+                        // phone number that is perfectly fine is worse than
+                        // showing them the raw line and letting them read it.
                         const info = describeWhatsappError(row.error_code, row.error)
+                        if (!info.matched) return null
                         return (
                           <>
                             <p className="text-xs font-medium">{info.title}</p>
@@ -626,7 +633,17 @@ export default async function RemindersPage({
                           break opportunity and dragged the whole page to 791px
                           wide inside a 375px viewport — every row on the tab
                           scrolling sideways because of one error string. */}
-                      <p className="mt-2 text-[11px] break-words opacity-70">{row.error}</p>
+                      <p
+                        className={cn(
+                          "text-xs break-words",
+                          // Dimmed only when there is guidance above it to be
+                          // secondary TO. On its own it is the whole message.
+                          describeWhatsappError(row.error_code, row.error).matched &&
+                            "mt-2 text-[11px] opacity-70",
+                        )}
+                      >
+                        {row.error}
+                      </p>
                     </div>
                   )}
                 </li>

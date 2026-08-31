@@ -47,26 +47,25 @@ export type ReceiptOwners = Map<string, ReceiptOwner & { businessId: string }>
  * a 500, which asks Meta to redeliver — the right trade, since the reason is
  * the only explanation of the failure that will ever exist.
  */
-export async function loadReceiptOwners(admin: Admin, statuses: StatusEvent[]): Promise<ReceiptOwners> {
-  if (statuses.length === 0) return new Map()
+export async function loadReceiptOwners(
+  admin: Admin,
+  statuses: StatusEvent[],
+): Promise<ReceiptOwners> {
+  /**
+   * Only failures need an owner, and scoping to them matters twice.
+   *
+   * It shrinks the query — a busy send window is mostly `sent`/`delivered`/
+   * `read` — and it narrows the blast radius of this read failing: a payload of
+   * pure delivery receipts should never be able to 500 the webhook and earn a
+   * redelivery, because nothing in it was going to be acted on anyway.
+   */
+  const wamids = [...new Set(statuses.filter((s) => s.status === "failed").map((s) => s.wamid))]
+  if (wamids.length === 0) return new Map()
 
   // The embeds carry everything the retry decision needs, so deciding costs no
   // extra round trip inside Meta's ~20s budget. `businesses` is the tenant's
   // timezone because an occurrence date is a calendar date in THEIR zone;
   // `contact_events` is the event type, because a birthday is never retried.
-  const { data, error } = await admin
-    .from("reminders")
-    .select(
-      "id, business_id, status, attempts, occurrence_date, whatsapp_message_id, " +
-        "contact_events(event_type), businesses(timezone)",
-    )
-    .in(
-      "whatsapp_message_id",
-      statuses.map((s) => s.wamid),
-    )
-
-  if (error) throw new Error(`resolving receipt owners: ${error.message}`)
-
   type OwnerRow = {
     id: string
     business_id: string
@@ -78,8 +77,29 @@ export async function loadReceiptOwners(admin: Admin, statuses: StatusEvent[]): 
     businesses: { timezone: string } | null
   }
 
+  /**
+   * Chunked, like loadAssignments in run-cycle.ts and for the same reason: an
+   * `in` list of thousands of ~70-character message ids blows past PostgREST's
+   * URL length, and Meta batches status transitions. That failure is a property
+   * of the PAYLOAD, so a redelivery reproduces it exactly — a self-inflicted
+   * permanent 500 triggered by nothing worse than a busy send window.
+   */
+  const CHUNK = 200
+  const rows: OwnerRow[] = []
+  for (let i = 0; i < wamids.length; i += CHUNK) {
+    const { data, error } = await admin
+      .from("reminders")
+      .select(
+        "id, business_id, status, attempts, occurrence_date, whatsapp_message_id, " +
+          "contact_events(event_type), businesses(timezone)",
+      )
+      .in("whatsapp_message_id", wamids.slice(i, i + CHUNK))
+    if (error) throw new Error(`resolving receipt owners: ${error.message}`)
+    rows.push(...((data ?? []) as unknown as OwnerRow[]))
+  }
+
   return new Map(
-    ((data ?? []) as unknown as OwnerRow[]).map((r) => [
+    rows.map((r) => [
       r.whatsapp_message_id,
       {
         id: r.id,
@@ -243,7 +263,27 @@ export async function recordStatusEvents(
   ).select("id")
 
   if (error) {
+    /**
+     * Best-effort ONLY while this is not the last copy of something.
+     *
+     * The original reasoning — a record must never cost the caller the status
+     * update beside it — was sound when the record was a bonus. It stopped
+     * being sound the moment resolveFailedReceipt started declining to chase an
+     * unowned failure *because* this write keeps it. Two locally reasonable
+     * best-effort decisions then compose into total, unrecoverable loss of the
+     * only explanation that will ever exist, behind a 200 and one log line.
+     *
+     * So: if the batch holds a failure that no reminder owns, this row IS the
+     * copy, and the write failing has to reach the caller — which turns it into
+     * a 500 and a redelivery from Meta. Anything else stays best-effort.
+     */
+    const orphanFailure = statuses.some((s) => s.status === "failed" && !owners.has(s.wamid))
     console.error(`[whatsapp-webhook] could not record status events: ${error.message}`)
+    if (orphanFailure) {
+      throw new Error(
+        `receipt log unavailable while holding the only copy of an unattributed failure: ${error.message}`,
+      )
+    }
     return 0
   }
   return data?.length ?? 0

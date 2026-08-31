@@ -33,9 +33,25 @@ describe("the automatic-send gate", () => {
 
   it("fails closed when the flag cannot be read", () => {
     // "I do not know whether sending is allowed" must never resolve to sending.
+    //
+    // This used to be pinned as `return { sent: 0, ... }`, which fails closed
+    // and also fails SILENTLY: the cycle returned normally, the heartbeat was
+    // written, the cron answered ok:true and the banner said `live` while
+    // nothing was delivered. Throwing keeps the closed property — it sends
+    // nothing either — and stops every observable in the system reporting
+    // health. What is pinned is the property, not the mechanism: this branch
+    // must not fall through to the delivery loop.
     const gate = deliverDue.slice(deliverDue.indexOf("auto_send_enabled"))
     const onError = gate.slice(gate.indexOf("gateError"), gate.indexOf("const ids"))
-    expect(onError).toMatch(/return \{ sent: 0, failed: 0, skipped: 0 \}/)
+    expect(onError).toMatch(/throw new Error|return \{ sent: 0, failed: 0, skipped: 0 \}/)
+  })
+
+  it("does not report a successful cycle when the gate is unreadable", () => {
+    // The specific lie that was being told. A silent zero here is
+    // indistinguishable from a genuinely quiet queue at every layer above.
+    const gate = deliverDue.slice(deliverDue.indexOf("auto_send_enabled"))
+    const onError = gate.slice(gate.indexOf("gateError"), gate.indexOf("const ids"))
+    expect(onError).toMatch(/throw new Error/)
   })
 
   it("queries nothing at all when no business has it switched on", () => {

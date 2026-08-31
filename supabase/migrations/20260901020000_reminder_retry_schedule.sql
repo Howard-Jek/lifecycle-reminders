@@ -9,8 +9,16 @@
 -- NULL means "eligible now". That is every row today and every first attempt
 -- forever, which is why there is no default beyond NULL and no backfill: a
 -- queue that has never failed has nothing to wait for.
+-- RENAMED from 20260828000000, which is where this file lives on
+-- claude/whatsapp-webhook-validation-tswrys. That timestamp sorts BEFORE four
+-- migrations already applied to the live database, so `supabase db push`
+-- refuses it without --include-all and scripts/sql-bundle.ts, which sorts by
+-- filename, replays it in the wrong position.
+--
+-- IF NOT EXISTS so that merging that branch later — which brings the original
+-- filename back — is a no-op rather than an error.
 ALTER TABLE "public"."reminders"
-  ADD COLUMN "next_attempt_at" timestamp with time zone;
+  ADD COLUMN IF NOT EXISTS "next_attempt_at" timestamp with time zone;
 
 COMMENT ON COLUMN "public"."reminders"."next_attempt_at" IS
   'Earliest instant this reminder may be attempted again. NULL = eligible now.';
