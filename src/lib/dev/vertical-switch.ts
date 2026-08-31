@@ -17,6 +17,7 @@
  */
 
 import { cookies } from "next/headers"
+import { revalidatePath } from "next/cache"
 import { isProductionRuntime } from "@/lib/env"
 import { isVertical, type Vertical } from "@/lib/lifecycle/verticals"
 // Imported, not declared here: a "use server" module may export only async
@@ -50,6 +51,8 @@ export async function setDevVertical(vertical: string | null): Promise<void> {
   const jar = await cookies()
   if (vertical === null || vertical === "") {
     jar.delete(DEV_VERTICAL_COOKIE)
+    // See below: a cookie write alone changes nothing that is already rendered.
+    revalidatePath("/", "layout")
     return
   }
 
@@ -65,4 +68,19 @@ export async function setDevVertical(vertical: string | null): Promise<void> {
     path: "/",
     maxAge: 60 * 60 * 24 * 30,
   })
+
+  /**
+   * Setting the cookie is not enough, and the gap is invisible.
+   *
+   * A server action that only writes a cookie does not re-render anything: the
+   * value is stored, every subsequent request sees it, and the page you are
+   * looking at keeps the labels it was built with. Pressing Switch therefore
+   * appeared to do nothing at all until you happened to navigate — which reads
+   * as a broken control, not a deferred one.
+   *
+   * "layout" scope because the pack reaches the shell (the switcher's own
+   * selected value) as well as the page, and revalidating only the page would
+   * leave the dropdown disagreeing with the labels underneath it.
+   */
+  revalidatePath("/", "layout")
 }

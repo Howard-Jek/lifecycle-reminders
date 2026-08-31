@@ -67,6 +67,43 @@ describe('the "use server" module exports only server actions', () => {
   })
 })
 
+describe("switching takes effect immediately", () => {
+  it("revalidates, because a cookie write re-renders nothing on its own", () => {
+    /**
+     * The defect this pins had no error and no symptom beyond "the button does
+     * nothing": the cookie was stored correctly and every LATER request saw it,
+     * but the page already on screen kept the labels it was built with. It only
+     * appeared to work if you happened to navigate afterwards.
+     *
+     * "layout" scope because the pack reaches the shell as well as the page —
+     * revalidating the page alone leaves the dropdown showing one industry
+     * while the table underneath shows another.
+     */
+    expect(fn(switchModule, "setDevVertical")).toMatch(/revalidatePath\("\/", "layout"\)/)
+  })
+
+  it("revalidates when clearing the override too", () => {
+    // The reset path is the one you reach for when something looks wrong, so
+    // it appearing not to work is worse than the set path doing the same.
+    const setter = fn(switchModule, "setDevVertical")
+    const clearBranch = setter.slice(0, setter.indexOf("if (!isVertical("))
+    expect(clearBranch).toMatch(/revalidatePath/)
+  })
+})
+
+describe("the control agrees with what it controls", () => {
+  it("keys the select on the server value so it remounts when the pack changes", () => {
+    // defaultValue is uncontrolled — React sets it once and never touches the
+    // DOM value again. Without a key, the dropdown kept the last thing picked
+    // in it while the labels underneath had already moved on.
+    const component = readFileSync(
+      join(root, "src/components/dev/vertical-switcher.tsx"),
+      "utf8",
+    )
+    expect(component).toMatch(/key=\{current \?\? "none"\}/)
+  })
+})
+
 describe("the override has exactly one consumer", () => {
   it("is read only by currentPack, so deleting it at integration is one line", () => {
     expect(currentPack).toMatch(/devVerticalOverride\(\)/)

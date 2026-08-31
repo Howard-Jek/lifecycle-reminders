@@ -34,6 +34,16 @@ export function VerticalSwitcher({ current }: { current: string | null }) {
       <select
         name="vertical"
         aria-label="Preview another industry's reminder pack"
+        /**
+         * Keyed on the server's value so the node REMOUNTS when the override
+         * changes. `defaultValue` is uncontrolled: React sets it once and never
+         * touches the DOM value again, so after the action re-rendered the page
+         * the dropdown kept whatever was last picked in it while the labels
+         * underneath had moved on — the control disagreeing with the thing it
+         * controls, in the one component whose job is to say which pack you are
+         * looking at.
+         */
+        key={current ?? "none"}
         defaultValue={current ?? ""}
         className="h-7 rounded-md border border-input bg-background px-2 text-xs focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
       >

@@ -120,6 +120,24 @@ describe("pack invariants", () => {
     }
   })
 
+  it("writes `inline` to fit the sentence that uses it", () => {
+    /**
+     * Contacts renders "counted by the {inline} on file", so a pack that ends
+     * its own phrase with "on file" produces "counted by the dates on file on
+     * file". The generic pack did exactly that, and it was invisible until
+     * somebody looked at a business with no industry set — which is the
+     * DEFAULT state for every new account.
+     *
+     * The phrase belongs to the sentence, not to the pack.
+     */
+    for (const pack of allPacks()) {
+      expect(pack.holding.inline, pack.key).not.toMatch(/on file/i)
+      // Lower case, because it lands mid-sentence.
+      expect(pack.holding.inline, pack.key).toBe(pack.holding.inline.toLowerCase())
+      expect(pack.holding.inline.trim().length, pack.key).toBeGreaterThan(0)
+    }
+  })
+
   it("gives every rule and event type a label somebody can read", () => {
     for (const pack of allPacks()) {
       for (const r of pack.rules) expect(r.label.trim().length, pack.key).toBeGreaterThan(0)

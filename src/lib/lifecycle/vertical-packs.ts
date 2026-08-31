@@ -166,7 +166,11 @@ const GENERIC_PACK: VerticalPack = {
     bucket: "Dates",
     // No narrower word is true of every business, so none is claimed.
     narrow: null,
-    inline: "dates on file",
+    // "dates", NOT "dates on file". The Contacts sentence appends "on file"
+    // itself — "counted by the {inline} on file" — so this read "counted by
+    // the dates on file on file". Every other pack ends in a noun for the same
+    // reason: the phrase belongs to the sentence, not to the pack.
+    inline: "dates",
   },
   eventTypes: [
     ...PERSONAL_DATES,
