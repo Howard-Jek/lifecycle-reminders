@@ -16,6 +16,7 @@ import { WelcomeTour } from "@/components/onboarding/welcome-tour"
 import { CalendarClock, Inbox } from "lucide-react"
 import { isHoldingType } from "@/lib/lifecycle/event-types"
 import { currentPack } from "@/lib/lifecycle/current-pack"
+import { devVerticalScope } from "@/lib/dev/vertical-scope"
 import { holdingLabel } from "@/lib/lifecycle/vertical-packs"
 import { loadEventFacts } from "@/lib/lifecycle/event-facts"
 import { applyReminderScope, type ReminderScope } from "@/lib/lifecycle/reminder-filters"
@@ -249,6 +250,11 @@ export default async function RemindersPage({
     .eq("business_id", tenant.businessId)
     .limit(PAGE_SIZE)
   if (viewTypes.length > 0) query = query.in("contact_events.event_type", viewTypes)
+  // Dev-only. Narrowed to the previewed industry's demo contacts, so switching
+  // to fitness stops showing somebody's policy renewals. Null in production and
+  // with no override, and null means no filter at all.
+  const scope = await devVerticalScope(admin, tenant.businessId)
+  if (scope) query = query.in("event_id", scope.eventIds)
 
   /**
    * Every link on this page keeps the scope you are already in.
@@ -290,10 +296,13 @@ export default async function RemindersPage({
   // How many are behind each tab, so "Needs attention" can say so without
   // being opened. `head: true` — these are counts, no rows cross the wire.
   const countFor = (id: TabId) => {
-    const q = admin
+    let q = admin
       .from("reminders")
       .select(withType("id"), { count: "exact", head: true })
       .eq("business_id", tenant.businessId)
+    // The SAME dev narrowing as the list. A tab reading "Upcoming 1085" above
+    // ten rows would be a worse lie than either number alone.
+    if (scope) q = q.in("event_id", scope.eventIds)
     return applyReminderScope(q, scopeFor(id))
   }
 

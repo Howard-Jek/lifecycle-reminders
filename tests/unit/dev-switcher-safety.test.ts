@@ -124,11 +124,47 @@ describe("the override has exactly one consumer", () => {
       .map((file) => file.replace(root + "/", ""))
       .sort()
 
-    expect(hits).toEqual([
+    // Anything inside src/lib/dev/ is deleted as a unit at integration, so
+    // consumers there cost nothing. What must stay countable is the reach OUT
+    // of that directory: every such file is one someone has to remember.
+    const outsideDevDir = hits.filter((f) => !f.startsWith("src/lib/dev/"))
+    expect(outsideDevDir).toEqual([
       "src/app/(app)/layout.tsx",
-      "src/lib/dev/vertical-switch.ts",
       "src/lib/lifecycle/current-pack.ts",
     ])
+  })
+})
+
+describe("the dev row filter is the dangerous one, and is gated hardest", () => {
+  /**
+   * Renaming a column in production would be embarrassing. FILTERING ROWS in
+   * production would hide an operator's contacts and their due reminders, with
+   * no error and nothing on screen to say anything was missing — the worst
+   * failure this product could have.
+   */
+  const scope = readFileSync(join(root, "src/lib/dev/vertical-scope.ts"), "utf8")
+
+  it("resolves through the same production-gated override", () => {
+    // It does not read isProductionRuntime itself; it asks devVerticalOverride,
+    // which returns null in production before touching a cookie. One gate, one
+    // place, rather than a second copy that could drift.
+    expect(scope).toMatch(/devVerticalOverride\(\)/)
+    expect(scope).toMatch(/if \(!vertical\) return null/)
+  })
+
+  it("fails OPEN on a read error, never closed", () => {
+    // A filter that fails closed shows an empty book and looks like data loss.
+    const onError = scope.slice(scope.indexOf("leadErr"), scope.indexOf("const leadIds"))
+    expect(onError).toMatch(/return null/)
+    expect(onError).not.toMatch(/leadIds: \[\]/)
+  })
+
+  it("is applied to the counts as well as the list", () => {
+    // A tab reading "Upcoming 1085" above ten rows is a worse lie than either
+    // number on its own.
+    const page = readFileSync(join(root, "src/app/(app)/reminders/page.tsx"), "utf8")
+    const countFor = page.slice(page.indexOf("const countFor ="), page.indexOf("const [{ data, error }"))
+    expect(countFor).toMatch(/scope/)
   })
 })
 

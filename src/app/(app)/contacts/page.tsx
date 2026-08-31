@@ -8,6 +8,7 @@ import { ContactSearch } from "./search"
 import { Users, Cake, ChevronRight } from "lucide-react"
 import { isHoldingType } from "@/lib/lifecycle/event-types"
 import { currentPack } from "@/lib/lifecycle/current-pack"
+import { devVerticalScope } from "@/lib/dev/vertical-scope"
 
 export const metadata = { title: "Contacts" }
 
@@ -65,6 +66,12 @@ export default async function ContactsPage({
   // rides alongside rather than after. A Supabase round-trip is ~130ms from a
   // laptop regardless of what it returns; sequencing two independent queries
   // doubles that for nothing.
+  // Dev-only: when an industry is being previewed, the list is that industry's
+  // demo contacts. Null in production and whenever no override is chosen, and
+  // null means NO filter — see vertical-scope.ts on why it fails open.
+  const scope = await devVerticalScope(admin, tenant.businessId)
+  if (scope) query = query.in("id", scope.leadIds)
+
   const [{ data, count, error }, memberRes, businessRes] = await Promise.all([
     query,
     admin.from("team_members").select("id, display_name").eq("business_id", tenant.businessId),
