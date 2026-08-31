@@ -409,6 +409,7 @@ function stubUpdateCapture(rows: Array<{ id: string }> | null = []) {
       gte: (c: string, v: unknown) => (filters.push(["gte:" + c, v]), chain),
       is: (c: string, v: unknown) => (filters.push(["is:" + c, v]), chain),
       in: (c: string, v: unknown) => (filters.push(["in:" + c, v]), chain),
+      not: (c: string, op: string, v: unknown) => (filters.push([`not:${c}:${op}`, v]), chain),
       // Returns the chain rather than resolving, because the sweep now READS
       // before it writes: it selects the stuck personal-date rows to resolve
       // them separately. The chain is thenable, so a terminal `.select("id")`

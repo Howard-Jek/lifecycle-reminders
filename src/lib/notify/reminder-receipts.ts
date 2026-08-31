@@ -164,6 +164,18 @@ export async function recordFailedSends(
           : { status: "failed" }),
       })
       .eq("id", verdict.reminderId)
+      /**
+       * IDENTITY, not just state. The verdict was computed from a snapshot, and
+       * between that read and this write the row can be requeued by hand and
+       * re-claimed — at which point `claimed` is still true but it is a
+       * DIFFERENT attempt, with a different message already accepted by Meta.
+       * Writing this stale verdict onto it would requeue a message that had
+       * just been sent, and the agent gets it twice.
+       *
+       * Every legitimate case still matches: markReminderSent rewrites the same
+       * wamid, and stampDelivered set it for the `claimed` case.
+       */
+      .eq("whatsapp_message_id", receipt.wamid)
       // Re-asserted at the write, not merely checked in the verdict above: the
       // row can move between the read and this update, and the whole point of
       // the predicate is that the later writer wins.
@@ -172,7 +184,18 @@ export async function recordFailedSends(
 
     if (error) throw new Error(`marking ${receipt.wamid} failed: ${error.message}`)
 
-    updated += data?.length ?? 0
+    const matched = data?.length ?? 0
+    if (matched === 0) {
+      // The predicate above rejected it — the narrow window it exists for, and
+      // until now the only skip in this module that said nothing at all. If the
+      // predicate were ever wrong, every receipt would quietly no-op and
+      // `failed: 0` in the response would read as a quiet day.
+      console.warn(
+        `[reminder-receipts] ${receipt.wamid} moved between the read and the write — ` +
+          `leaving whatever resolved it in place`,
+      )
+    }
+    updated += matched
   }
 
   return updated

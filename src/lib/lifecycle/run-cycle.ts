@@ -794,14 +794,26 @@ async function deliverOne(
       `[lifecycle] reminder ${row.id} delivered (${res.whatsappMessageId}) but could not be recorded`,
     )
   } else if (recorded === "superseded") {
-    // A delivery receipt resolved this row while the send was still in flight
-    // — Meta answered faster than our own bookkeeping. Its verdict and its
-    // reason are already on the row and must stay there, so this is a note,
-    // not an error. Reporting it as "could not be recorded" would send someone
-    // hunting a bug in the write path that is not there.
+    /**
+     * Something else resolved this row while the send was in flight. Which
+     * something is not knowable from a zero-row update, and there are three
+     * candidates — a delivery receipt (the expected one), the row being deleted
+     * by a cascade, and a bulk requeue unclaiming it — so the row is re-read
+     * rather than a cause being asserted.
+     *
+     * Naming the wrong cause is worse than naming none: it sends whoever reads
+     * this hunting whatsapp_status_events for a receipt that does not exist,
+     * and buries the fact that a billed message went out.
+     */
+    const { data: after } = await admin
+      .from("reminders")
+      .select("status, error")
+      .eq("id", row.id)
+      .maybeSingle<{ status: string; error: string | null }>()
     console.warn(
-      `[lifecycle] reminder ${row.id} (${res.whatsappMessageId}) was resolved by a delivery ` +
-        `receipt mid-send — keeping that verdict`,
+      `[lifecycle] reminder ${row.id} (${res.whatsappMessageId}) was resolved by something else ` +
+        `mid-send — it is now ${after ? `'${after.status}'${after.error ? `: ${after.error}` : ""}` : "gone"}. ` +
+        `The message WAS sent; keeping whatever resolved it.`,
     )
   }
 

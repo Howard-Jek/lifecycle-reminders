@@ -115,6 +115,11 @@ export async function stampDelivered(
     .from("reminders")
     .update({ whatsapp_message_id: whatsappMessageId })
     .eq("id", reminderId)
+    // Only onto the claim this run holds. Without it, a row that something
+    // else resolved and requeued mid-send gets a wamid while sitting at
+    // `queued` — a state that reads as "delivered" to the stuck-claim sweep's
+    // guard and blocks it from ever rescuing the row again.
+    .eq("status", "claimed")
   if (error) {
     // Worst case we are back to the old behaviour for this row: a duplicate is
     // possible. Loud, because the message HAS gone out.
@@ -134,7 +139,15 @@ export type MarkSentOutcome =
   | "recorded"
   /** Something else resolved the row first — see markReminderSent's note. */
   | "superseded"
-  /** The write itself failed; the stuck-claim sweep is the safety net. */
+  /**
+   * The write itself failed.
+   *
+   * The message HAS gone out — stampDelivered wrote the wamid a statement
+   * earlier — so the row is `claimed` with a non-null whatsapp_message_id. The
+   * three original sweep passes all require that column to be NULL, reading a
+   * wamid as "delivered, do not touch", so none of them could see it. The
+   * fourth pass in requeueStuckClaims exists for exactly this row.
+   */
   | "error"
 
 /**
@@ -247,11 +260,51 @@ export async function requeueStuckClaims(
         "id",
         personal.map((r) => r.id as string),
       )
+      // Re-asserted at the write, like every other conditional update here. The
+      // select and this update are two statements, and a row that resolved in
+      // between would otherwise be clobbered to `failed` with a reason that is
+      // not true of it.
+      .eq("status", "claimed")
+      .is("whatsapp_message_id", null)
     if (error) {
       console.error(`[lifecycle] personal stuck-claim resolve failed: ${error.message}`)
     } else {
       console.warn(`[lifecycle] ${personal.length} interrupted personal reminders not retried`)
     }
+  }
+
+  /**
+   * The row whose message went out and whose bookkeeping did not.
+   *
+   * stampDelivered writes the wamid in its own statement, before the status
+   * flip, so markReminderSent failing leaves `claimed` with a NON-NULL wamid.
+   * Every other pass here requires that column to be NULL — they read a wamid
+   * as "delivered, do not resend", which is right — so this row was visible to
+   * none of them. It is not `queued`, so the delivery loop skips it; it is
+   * `claimed`, which applyReminderScope deliberately puts on no tab; and
+   * deliverOne returned "sent", so the cycle counted it as delivered. A message
+   * reached a handset and the only record of it was one console.error.
+   *
+   * Resolved to `sent`, because that is what the wamid MEANS: Meta accepted it.
+   * Reconstructing the bookkeeping is the honest outcome — the alternative,
+   * requeueing, would send a second copy of a message already delivered.
+   *
+   * sent_at is set to now rather than to when it actually went, which is not
+   * recoverable; the error line says so instead of quietly implying precision.
+   */
+  const { error: strandedErr } = await admin
+    .from("reminders")
+    .update({
+      status: "sent",
+      claimed_at: null,
+      sent_at: new Date().toISOString(),
+      error: "Delivered, but recorded late — the send succeeded and the bookkeeping did not.",
+    })
+    .eq("status", "claimed")
+    .lt("claimed_at", cutoff)
+    .not("whatsapp_message_id", "is", null)
+  if (strandedErr) {
+    console.error(`[lifecycle] stranded-delivery sweep failed: ${strandedErr.message}`)
   }
 
   const { error: exhaustErr } = await admin
