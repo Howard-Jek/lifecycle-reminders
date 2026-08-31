@@ -1,6 +1,7 @@
 "use server"
 
 import { revalidatePath } from "next/cache"
+import { reassignContactReminders } from "@/lib/lifecycle/reassign-reminders"
 import { requireTenant } from "@/lib/tenant"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { parseCalendarDate } from "@/lib/sanitize"
@@ -201,7 +202,12 @@ export async function assignContact(
   if (error) return { ok: false, error: error.message }
   if (!data) return { ok: false, error: "That contact no longer exists." }
 
+  // Every path that changes an assignment must do this; see the helper.
+  await reassignContactReminders(admin, tenant.businessId, contactId, memberId)
+
   revalidatePath(`/contacts/${contactId}`)
   revalidatePath("/contacts")
+  // The inbox shows which agent each reminder is for, and it just changed.
+  revalidatePath("/reminders")
   return { ok: true }
 }

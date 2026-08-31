@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { reassignContactReminders } from "@/lib/lifecycle/reassign-reminders"
 import { withApiToken } from "@/lib/api/handler"
 import { ok, badRequest, notFound, readJson } from "@/lib/api/respond"
 
@@ -80,6 +81,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       .eq("business_id", caller.businessId)
       .eq("id", leadId)
     if (assignError) throw new Error(assignError.message)
+
+    // The lead already existed, so it may already have reminders queued to a
+    // different agent. Same rule as the contact page.
+    await reassignContactReminders(admin, caller.businessId, leadId, memberId)
 
     // resolution_coherent requires status, resolved_lead_id and resolved_at
     // to move together.

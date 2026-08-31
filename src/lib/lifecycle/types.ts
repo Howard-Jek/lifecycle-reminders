@@ -79,6 +79,8 @@ export type Reminder = {
   claimed_at: string | null
   sent_at: string | null
   attempts: number
+  /** Earliest instant this may be attempted again. Null = eligible now. */
+  next_attempt_at: string | null
   suggestion: string | null
   whatsapp_message_id: string | null
   error: string | null

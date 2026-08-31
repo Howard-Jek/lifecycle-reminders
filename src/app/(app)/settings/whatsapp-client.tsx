@@ -1,4 +1,6 @@
 import { StatusPill } from "./status-pill"
+import { NumberPanel } from "./number-panel"
+import { WebhookPanel } from "./webhook-panel"
 import type { WhatsappConfig } from "@/app/actions/whatsapp"
 
 /**
@@ -9,12 +11,14 @@ import type { WhatsappConfig } from "@/app/actions/whatsapp"
  * that business; this add-on only ever messages your own agents, so it is a
  * single platform identity and a single template.
  *
- * NO LONGER A CLIENT COMPONENT. Steps 1 and 3 are pure renders of environment
- * variables with nothing to click, and step 2 — the only interactive part, and
- * the only part that has to wait on Meta — is passed in as `templateBlock` so
- * the page can wrap it in Suspense. That is the whole point of the split: the
- * card frame, the credential check and the dry-run notice arrive with the rest
- * of Settings instead of behind a graph.facebook.com round trip.
+ * NOT A CLIENT COMPONENT. Step 2 — the template — is passed in as
+ * `templateBlock` so the page can wrap it in Suspense, and the card frame and
+ * the dry-run notice arrive with the rest of Settings instead of behind a
+ * graph.facebook.com round trip.
+ *
+ * Steps 1 and 3 each ask Meta something, so each is its own client component
+ * holding its own transition. Neither fetches on mount: this page must render
+ * without waiting on Graph, which is the whole point of the split.
  */
 export function WhatsappClient({
   setup,
@@ -24,12 +28,6 @@ export function WhatsappClient({
   /** Step 2, streamed. See settings/page.tsx. */
   templateBlock: React.ReactNode
 }) {
-  const missing = [
-    !setup.phoneNumberId && "GOMA_NOTIFY_PHONE_NUMBER_ID",
-    !setup.wabaId && "GOMA_NOTIFY_WABA_ID",
-    !setup.accessToken && "GOMA_NOTIFY_ACCESS_TOKEN",
-  ].filter(Boolean) as string[]
-
   return (
     <section className="rounded-xl border bg-card p-6 shadow-sm ring-1 ring-foreground/5">
       <div className="mb-6">
@@ -42,47 +40,18 @@ export function WhatsappClient({
       </div>
 
       {/* ── Step 1: the number ───────────────────────────────────────────── */}
-      <div className="rounded-lg border bg-background p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h3 className="text-sm font-medium">1 · The number</h3>
-          <StatusPill
-            tone={setup.configured ? "good" : "waiting"}
-            label={setup.configured ? "Connected" : "Not configured"}
-          />
-        </div>
-
-        {setup.configured ? (
-          <p className="mt-2 text-sm text-muted-foreground">
-            All three credentials are present. Reminders will be sent from this number.
-          </p>
-        ) : (
-          <div className="mt-3 space-y-2 text-sm text-muted-foreground">
-            <p>
-              Add a number in Meta Business Manager, then set{" "}
-              {missing.length === 3 ? "these" : "the missing"} variables and restart:
-            </p>
-            <ul className="space-y-1">
-              {missing.map((name) => (
-                <li key={name} className="font-mono text-xs text-brand-ink">
-                  {name}
-                </li>
-              ))}
-            </ul>
-            <p className="text-xs">
-              Locally that is <code className="font-mono">.env.local</code>; on Vercel it is
-              Project Settings → Environment Variables.
-            </p>
-          </div>
-        )}
-      </div>
+      <NumberPanel setup={setup} />
 
       {/* ── Step 2: the template ─────────────────────────────────────────── */}
       {templateBlock}
 
-      {/* ── Step 3: going live ───────────────────────────────────────────── */}
+      {/* ── Step 3: the webhook ──────────────────────────────────────────── */}
+      <WebhookPanel webhook={setup.webhook} />
+
+      {/* ── Step 4: going live ───────────────────────────────────────────── */}
       <div className="mt-4 rounded-lg border bg-background p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <h3 className="text-sm font-medium">3 · Sending for real</h3>
+          <h3 className="text-sm font-medium">4 · Sending for real</h3>
           <StatusPill
             tone={setup.dryRun ? "waiting" : "good"}
             label={setup.dryRun ? "Dry run" : "Live"}

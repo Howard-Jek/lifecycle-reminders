@@ -171,10 +171,15 @@ export async function clearSandbox(): Promise<ActionResult> {
 /**
  * Put every delivered reminder back in the queue so a demo can be replayed.
  *
- * Resets status, claim, attempts and the message id together. Clearing
- * `whatsapp_message_id` matters: the stuck-claim sweep treats a row that has
- * one as already delivered, so leaving it set would make a replayed row
- * un-redeliverable.
+ * Resets status, claim, attempts, the message id and the retry schedule
+ * together. Two of those are load-bearing rather than tidy:
+ *
+ *   `whatsapp_message_id` — the stuck-claim sweep treats a row that has one as
+ *   already delivered, so leaving it set makes a replayed row un-redeliverable.
+ *
+ *   `next_attempt_at` — the delivery query skips a row until that instant. A
+ *   replayed reminder that had failed would keep the wait its failure earned
+ *   and sit invisible for up to a week, which is the opposite of a replay.
  */
 export async function requeueAllReminders(): Promise<ActionResult<number>> {
   const tenant = await requireTenant()
@@ -187,6 +192,7 @@ export async function requeueAllReminders(): Promise<ActionResult<number>> {
       attempts: 0,
       whatsapp_message_id: null,
       error: null,
+      next_attempt_at: null,
     })
     .eq("business_id", tenant.businessId)
     .in("status", ["sent", "failed", "skipped", "claimed"])

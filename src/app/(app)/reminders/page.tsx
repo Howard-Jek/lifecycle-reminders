@@ -12,8 +12,10 @@ import { CoverageBanner } from "@/components/coverage-banner"
 import { SetupChecklistSection } from "@/components/onboarding/setup-checklist-section"
 import { CHECKLIST_COLLAPSED_COOKIE } from "@/lib/onboarding/steps"
 import { WelcomeTour } from "@/components/onboarding/welcome-tour"
-import { CalendarClock, Inbox } from "lucide-react"
+import { CalendarClock, Inbox, RotateCw } from "lucide-react"
+import { AgentFilter } from "./agent-filter"
 import { isPolicyLike } from "@/lib/lifecycle/event-types"
+import { attemptsRemaining } from "@/lib/lifecycle/retry-policy"
 import { loadEventFacts } from "@/lib/lifecycle/event-facts"
 import { applyReminderScope, type ReminderScope } from "@/lib/lifecycle/reminder-filters"
 import { deriveSendingStatus } from "@/lib/lifecycle/sending-status"
@@ -64,6 +66,25 @@ type ReminderRow = {
   sent_at: string | null
   member_id: string | null
   event_id: string
+  attempts: number
+  next_attempt_at: string | null
+}
+
+/**
+ * "in 3 days" beats a timestamp here. The operator's question is whether to
+ * wait or to act now, and a date makes them do the subtraction.
+ *
+ * `due` is separate from the day count on purpose. The scheduled instant sits
+ * at midday, so on the target date itself the count is already 0 while the
+ * delivery query still excludes the row for several more hours. Saying "on the
+ * next run" then is a promise the engine will not keep — up to nineteen hours
+ * early for a Singapore tenant. Only the instant can tell those apart.
+ */
+function describeNextAttempt(inDays: number, due: boolean): string {
+  if (due) return "Next attempt on the next run"
+  if (inDays <= 0) return "Next attempt later today"
+  if (inDays === 1) return "Next attempt tomorrow"
+  return `Next attempt in ${inDays} days`
 }
 
 const PAGE_SIZE = 50
@@ -77,6 +98,10 @@ export default async function RemindersPage({
   const raw = typeof params.tab === "string" ? params.tab : "due"
   const tab: TabId = (TABS.find((t) => t.id === raw)?.id ?? "due") as TabId
   const mine = params.mine === "1"
+  // Whose reminders. "unassigned" is a real selection, not the absence of one:
+  // those rows go to the owner's fallback number and are the ones most likely
+  // to be a mistake, so they have to be findable.
+  const agentParam = typeof params.agent === "string" ? params.agent : undefined
   // Which kind of date. Validated below against the buckets this business
   // actually has, so it can never select a view that is empty by construction.
   const viewParam = typeof params.view === "string" ? params.view : "all"
@@ -215,6 +240,37 @@ export default async function RemindersPage({
   const mineActive = mine && Boolean(myMemberId)
 
   /**
+   * One agent dimension, resolved once.
+   *
+   * `agent` wins over `mine` when both are present — an explicit choice should
+   * not be silently overridden by a toggle the operator left on — and `mine`
+   * survives only as the shortcut it always was, so links shared before this
+   * filter existed still mean what they meant.
+   *
+   * Validated against this business's own members. An id that is not one of
+   * them would return an empty list under a filter naming nobody, which reads
+   * as a broken tab rather than a bad URL.
+   */
+  const agent: string | null | undefined =
+    agentParam === "unassigned"
+      ? null
+      : agentParam && members.has(agentParam)
+        ? agentParam
+        : mineActive
+          ? myMemberId
+          : undefined
+
+  /** What the current selection is called, for the empty state and the chips. */
+  const agentLabel =
+    agent === undefined
+      ? null
+      : agent === null
+        ? "unassigned"
+        : agent === myMemberId
+          ? "yours"
+          : members.get(agent) ?? "that agent"
+
+  /**
    * `reminders` has no event_type — it lives on contact_events, one FK away.
    *
    * `!inner` turns the embed into a JOIN rather than a left-join, so a filter
@@ -230,7 +286,8 @@ export default async function RemindersPage({
    * nothing for a feature it is not using.
    */
   const LIST_COLUMNS =
-    "id, occurrence_date, due_at, status, suggestion, error, sent_at, member_id, event_id"
+    "id, occurrence_date, due_at, status, suggestion, error, sent_at, member_id, event_id, " +
+    "attempts, next_attempt_at"
   const withType = (columns: string) =>
     viewTypes.length > 0 ? `${columns}, contact_events!inner(event_type)` : columns
 
@@ -250,15 +307,23 @@ export default async function RemindersPage({
    * because `mine` was spelled out at every call site, and a third dimension
    * would have had to be spelled out at all of them again.
    */
-  const hrefFor = (next: { tab?: TabId; mine?: boolean; view?: ViewId }) => {
+  const hrefFor = (next: { tab?: TabId; view?: ViewId; agent?: string | null | undefined }) => {
     const q = new URLSearchParams({ tab: next.tab ?? tab })
-    if (next.mine ?? mineActive) q.set("mine", "1")
     const v = next.view ?? view
     if (v !== "all") q.set("view", v)
+    // Emitted as `agent` even when it came in as `mine=1`, so there is one
+    // spelling of this dimension in every link the page generates.
+    const a = "agent" in next ? next.agent : agent
+    if (a === null) q.set("agent", "unassigned")
+    else if (a !== undefined) q.set("agent", a)
     return `/reminders?${q}`
   }
 
   const nowIso = new Date().toISOString()
+  // Parsed once from the value above rather than read again per row: Date.now()
+  // during render is impure, and two rows disagreeing about "now" would be a
+  // real if tiny inconsistency in the same list.
+  const nowMs = Date.parse(nowIso)
 
   /**
    * One description of "what this tab is showing", shared with the Clear
@@ -267,8 +332,7 @@ export default async function RemindersPage({
    */
   const scopeFor = (id: TabId): ReminderScope => ({
     tab: id,
-    mine: mineActive,
-    memberId: myMemberId,
+    agent,
     viewTypes,
     nowIso,
   })
@@ -354,15 +418,15 @@ export default async function RemindersPage({
         <div className="flex flex-wrap items-center gap-2">
           {myMemberId && (
             <Link
-              href={hrefFor({ mine: !mineActive })}
+              href={hrefFor({ agent: agent === myMemberId ? undefined : myMemberId })}
               className={cn(
                 "inline-flex h-8 shrink-0 items-center rounded-lg px-3 text-sm font-medium ring-1 transition-colors",
-                mineActive
+                agent === myMemberId
                   ? "bg-foreground text-background ring-transparent"
                   : "bg-background text-foreground ring-foreground/10 hover:bg-muted",
               )}
             >
-              {mineActive ? "Showing mine" : "Only mine"}
+              {agent === myMemberId ? "Showing mine" : "Only mine"}
             </Link>
           )}
         </div>
@@ -454,7 +518,7 @@ export default async function RemindersPage({
               label={[
                 TABS.find((t) => t.id === tab)?.label ?? "this tab",
                 view === "all" ? null : viewLabel,
-                mineActive ? "yours" : null,
+                agentLabel,
               ]
                 .filter(Boolean)
                 .join(" · ")}
@@ -468,7 +532,7 @@ export default async function RemindersPage({
             label={[
               TABS.find((t) => t.id === tab)?.label ?? "this tab",
               view === "all" ? null : viewLabel,
-              mineActive ? "yours" : null,
+              agentLabel,
             ]
               .filter(Boolean)
               .join(" · ")}
@@ -486,8 +550,9 @@ export default async function RemindersPage({
               Only rendered when there is something to separate: an agency with
               no birthdays on file would get three options returning identical
               rows, which reads as a filter that does not work. */}
+          <div className="ml-auto flex flex-wrap items-center gap-3">
           {buckets.policies.length > 0 && buckets.personal.length > 0 && (
-            <div className="ml-auto flex flex-wrap items-center gap-1" role="group">
+            <div className="flex flex-wrap items-center gap-1" role="group">
               <span className="px-1 text-xs text-muted-foreground" id="view-filter-label">
                 Dates
               </span>
@@ -508,6 +573,28 @@ export default async function RemindersPage({
               ))}
             </div>
           )}
+
+          {/* Only when there is more than one agent to choose between. A solo
+              operator would get a select whose every option returns the same
+              rows, which reads as a filter that does not work. */}
+          {members.size > 1 && (
+            <AgentFilter
+              value={agent === undefined ? "all" : agent === null ? "unassigned" : agent}
+              options={[
+                { value: "all", label: "All agents", href: hrefFor({ agent: undefined }) },
+                ...[...members].map(([id, name]) => ({
+                  value: id,
+                  label: id === myMemberId ? `${name} (you)` : name,
+                  href: hrefFor({ agent: id }),
+                })),
+                // Its own option because these rows have no agent at all: they
+                // fall back to the owner's number, and they are the ones most
+                // worth being able to find.
+                { value: "unassigned", label: "Unassigned", href: hrefFor({ agent: null }) },
+              ]}
+            />
+          )}
+          </div>
         </div>
 
         {error ? (
@@ -524,9 +611,9 @@ export default async function RemindersPage({
             // reintroduced one filter over.
             narrowing={[
               view === "all" ? null : viewLabel.toLowerCase(),
-              mineActive ? "yours" : null,
+              agentLabel,
             ].filter((v): v is string => v !== null)}
-            clearHref={hrefFor({ view: "all", mine: false })}
+            clearHref={hrefFor({ view: "all", agent: undefined })}
           />
         ) : (
           <ul className="divide-y">
@@ -540,6 +627,43 @@ export default async function RemindersPage({
               const recipient = row.member_id
                 ? members.get(row.member_id) ?? "Removed member"
                 : "Owner (unassigned)"
+
+              /**
+               * A queued row with an attempt behind it is not "queued" in any
+               * sense an operator recognises — it is a retry waiting its turn.
+               * Naming it that, with the date, is what makes this tab readable
+               * without opening every row.
+               */
+              const retrying = row.status === "queued" && row.attempts > 0
+              const retryInDays =
+                retrying && row.next_attempt_at
+                  ? daysBetween(today, todayInTimezone(new Date(row.next_attempt_at), timezone))
+                  : null
+              // Separate from the day count: the scheduled instant sits at
+              // midday, so on the target date itself the count reaches 0 hours
+              // before the delivery query will actually take the row.
+              const retryDueNow =
+                retrying && row.next_attempt_at
+                  ? Date.parse(row.next_attempt_at) <= nowMs
+                  : false
+              /**
+               * The ceiling the DEADLINE allows, not the one the backoff array
+               * allows. "of 4" was only ever true for a reminder with a long
+               * lead time; a row due the day before its policy expires has one
+               * attempt left, and saying otherwise invites someone to wait for
+               * retries that will never be scheduled.
+               */
+              const retryCeiling =
+                retrying && event
+                  ? row.attempts +
+                    attemptsRemaining({
+                      eventType: event.event_type,
+                      attemptsBurnt: row.attempts,
+                      occurrenceDate: row.occurrence_date,
+                      now: new Date(),
+                      timezone,
+                    })
+                  : null
 
               return (
                 <li key={row.id} className="group/row px-5 py-4">
@@ -561,10 +685,12 @@ export default async function RemindersPage({
                         <span
                           className={cn(
                             "inline-flex h-5 items-center rounded-full px-2 text-xs font-medium",
-                            REMINDER_STATUS_PILL[row.status] ?? "bg-foreground/5",
+                            retrying
+                              ? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                              : REMINDER_STATUS_PILL[row.status] ?? "bg-foreground/5",
                           )}
                         >
-                          {row.status}
+                          {retrying ? "retrying" : row.status}
                         </span>
                       </p>
                       <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
@@ -603,6 +729,23 @@ export default async function RemindersPage({
                     // sideways because of one error string.
                     <p className="mt-2 rounded-lg bg-destructive/10 px-3 py-2 text-xs break-words text-destructive">
                       {row.error}
+                    </p>
+                  )}
+
+                  {retrying && (
+                    <p className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-amber-700 dark:text-amber-400">
+                      <RotateCw className="size-3.5" strokeWidth={1.75} />
+                      <span className="tabular-nums">
+                        {retryInDays === null
+                          ? "Waiting for the next run"
+                          : describeNextAttempt(retryInDays, retryDueNow)}
+                      </span>
+                      {retryCeiling !== null && (
+                        <span className="text-muted-foreground">
+                          · attempt <span className="tabular-nums">{row.attempts + 1}</span> of{" "}
+                          <span className="tabular-nums">{retryCeiling}</span>
+                        </span>
+                      )}
                     </p>
                   )}
                 </li>

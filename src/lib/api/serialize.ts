@@ -23,6 +23,12 @@ export type PublicReminder = {
   due_at: string
   sent_at: string | null
   attempts: number
+  /**
+   * When a failed reminder will be tried again. Null means eligible now, which
+   * is every first attempt and every row that will not be retried at all —
+   * `attempts` and `status` together say which.
+   */
+  next_attempt_at: string | null
   /** Null when the rule has drafting switched off, or before delivery. */
   suggestion: string | null
   error: string | null
@@ -42,6 +48,7 @@ export function toPublicReminder(row: Record<string, unknown>): PublicReminder {
     due_at: row.due_at as string,
     sent_at: (row.sent_at as string | null) ?? null,
     attempts: (row.attempts as number | null) ?? 0,
+    next_attempt_at: (row.next_attempt_at as string | null) ?? null,
     suggestion: (row.suggestion as string | null) ?? null,
     error: (row.error as string | null) ?? null,
     member_id: (row.member_id as string | null) ?? null,

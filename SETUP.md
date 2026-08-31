@@ -21,7 +21,7 @@ The app needs its own project. It does **not** touch GomaAI's database.
 npm run db:bundle
 ```
 
-That writes `supabase/bundle.sql`: all three migrations, already in the right order. Open the Supabase dashboard → **SQL Editor → New query**, paste the whole file, Run.
+That writes `supabase/bundle.sql`: every migration, already in the right order. Open the Supabase dashboard → **SQL Editor → New query**, paste the whole file, Run.
 
 No login, no database password, no connection string — none of which are needed to create eleven tables.
 
@@ -87,7 +87,7 @@ npm run template:register              # submit for review
 npm run template:register -- --status  # poll until APPROVED
 ```
 
-**Do not turn off dry-run until this reports `APPROVED`.** A reminder sent against a pending template fails, burns all three retries in about 45 minutes, and lands terminally `failed`.
+**Do not turn off dry-run until this reports `APPROVED`.** A reminder sent against a pending template fails, and what happens next depends on the date. A policy-type reminder retries after 1, then 3, then 7 days — up to four attempts spread over more than a week, so the queue does NOT settle within the hour. A birthday or anniversary is never retried and lands terminally `failed` on the first attempt. Any retry that would land after the date it is about is dropped rather than scheduled.
 
 If it's **REJECTED**, `--status` prints Meta's reason. The usual causes are a missing example value or a category mismatch — the script submits `UTILITY` with examples, which is the correct shape for an internal staff notification.
 

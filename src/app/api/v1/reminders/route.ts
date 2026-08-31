@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { withApiToken, readLimit, readOffset } from "@/lib/api/handler"
 import { ok, badRequest } from "@/lib/api/respond"
 import { toPublicReminder, type PublicReminder } from "@/lib/api/serialize"
+import { ATTENTION_FILTER } from "@/lib/lifecycle/reminder-filters"
 
 /**
  * GET /api/v1/reminders — what the engine has decided is worth a conversation.
@@ -9,11 +10,17 @@ import { toPublicReminder, type PublicReminder } from "@/lib/api/serialize"
  * This is the endpoint the whole integration exists for. Everything else in
  * this API manages inputs; this one reads the output.
  *
- * `status=due` is not a stored value — it is `queued AND due_at <= now`, the
- * same predicate the inbox and the delivery loop use. Exposing it as a named
- * filter keeps that definition in one place: a host app that reimplemented it
- * as "queued" would show reminders that are not due yet, and one that guessed
- * at the timezone would show them on the wrong day.
+ * `view=due` is not a stored value — it is `queued AND due_at <= now AND
+ * attempts = 0`, the same predicate the inbox uses. The attempts clause is what
+ * keeps "due" meaning UNTRIED: a reminder that failed once returns to `queued`,
+ * and without it the API would call that fresh work while the inbox called it a
+ * retry. It is deliberately NOT the delivery loop's predicate, which also gates
+ * on the attempts cap and the retry schedule — those decide what to send next,
+ * not what a human still has to look at.
+ *
+ * Exposing both as named filters keeps the definitions in one place: a host app
+ * that reimplemented `due` as "queued" would show reminders that are not due
+ * yet, and one that guessed at the timezone would show them on the wrong day.
  */
 
 export const dynamic = "force-dynamic"
@@ -45,20 +52,28 @@ export async function GET(request: Request) {
     let query = admin
       .from("reminders")
       .select(
-        "id, status, occurrence_date, due_at, sent_at, attempts, suggestion, error, member_id, event_id, rule_id",
+        "id, status, occurrence_date, due_at, sent_at, attempts, next_attempt_at, suggestion, error, member_id, event_id, rule_id",
         { count: "exact" },
       )
       .eq("business_id", caller.businessId)
       .range(offset, offset + limit - 1)
 
     if (view === "due") {
-      query = query.eq("status", "queued").lte("due_at", nowIso).order("due_at", { ascending: true })
+      query = query
+        .eq("status", "queued")
+        .lte("due_at", nowIso)
+        // Untried work only, matching the inbox. A row that failed once is
+        // queued too, and leaving it here told an integrator it was fresh work
+        // while the UI was calling it a retry — the same row, two answers.
+        .eq("attempts", 0)
+        .order("due_at", { ascending: true })
     } else if (view === "upcoming") {
       query = query.eq("status", "queued").gt("due_at", nowIso).order("due_at", { ascending: true })
     } else if (view === "attention") {
-      // Delivered nowhere, loudly or quietly. `skipped` is the quiet one and is
-      // the reason this view exists at all.
-      query = query.in("status", ["failed", "skipped"]).order("due_at", { ascending: false })
+      // Delivered nowhere, loudly or quietly, or waiting on a retry. `skipped`
+      // is the quiet one and is the reason this view exists at all. Shared with
+      // the inbox so the two cannot drift into disagreeing.
+      query = query.or(ATTENTION_FILTER).order("due_at", { ascending: false })
     } else if (status) {
       query = query.eq("status", status).order("due_at", { ascending: false })
     } else {
