@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { saveBusinessProfile, type BusinessProfile } from "@/app/actions/business"
+import { INDUSTRY_OPTIONS, isVertical } from "@/lib/lifecycle/verticals"
 
 export function ProfileClient({ profile }: { profile: BusinessProfile }) {
   const router = useRouter()
@@ -19,6 +20,7 @@ export function ProfileClient({ profile }: { profile: BusinessProfile }) {
         <h2 className="text-base font-semibold">Business</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           The timezone is load-bearing: a morning reminder means 9am here, not on the server.
+          The industry decides which reminder rules and wording you start with.
         </p>
       </div>
 
@@ -61,6 +63,34 @@ export function ProfileClient({ profile }: { profile: BusinessProfile }) {
             placeholder="Asia/Singapore"
           />
           <p className="text-xs text-muted-foreground">An IANA name, e.g. Asia/Singapore.</p>
+        </div>
+        <div className="flex flex-col gap-1 sm:col-span-3">
+          <label className="text-sm font-medium" htmlFor="vertical">
+            Industry
+          </label>
+          {/* A native select, matching the Input controls beside it. The empty
+              option is a real choice — "not chosen yet" is a state the column
+              models with NULL, and hiding it would make the first industry in
+              the list look like an answer nobody gave. */}
+          <select
+            id="vertical"
+            className="border-input bg-background focus-visible:ring-ring h-9 rounded-md border px-3 py-1 text-sm shadow-xs focus-visible:ring-1 focus-visible:outline-none"
+            value={value.vertical ?? ""}
+            onChange={(e) =>
+              setValue({ ...value, vertical: isVertical(e.target.value) ? e.target.value : null })
+            }
+          >
+            <option value="">Not set</option>
+            {INDUSTRY_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-muted-foreground">
+            Pick the closest match. It changes the starting rules and the wording, never your
+            existing dates or rules.
+          </p>
         </div>
       </div>
 
