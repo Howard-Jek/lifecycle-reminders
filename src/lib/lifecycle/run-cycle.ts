@@ -34,7 +34,8 @@ import {
   stampDelivered,
 } from "./claim-reminder"
 import { todayInTimezone, daysBetween } from "./occurrence"
-import { planRetry, describeGiveUp, MAX_ATTEMPTS } from "./retry-policy"
+import { planRetry, describeGiveUp, MAX_ATTEMPTS, PERMANENT_FAILURE } from "./retry-policy"
+import { isRetryableFailure } from "@/lib/whatsapp-errors"
 import { humaniseEventType } from "./labels"
 import { draftSuggestion, fallbackSuggestion } from "./suggest-message"
 import {
@@ -735,23 +736,34 @@ async function deliverOne(
 
     /**
      * Everything else is a candidate for another attempt — but only a
-     * candidate. planRetry refuses on three separate grounds (a personal date,
-     * a next attempt that would land after the occurrence, or the cap), and
-     * each refusal is terminal.
+     * candidate, and it has to pass the SAME two gates a failure reported by
+     * webhook passes (see resolveFailedReceipt).
      *
-     * Terminal matters as much as the retry does: `attempts` was already
-     * incremented by the claim, so a row left at 'queued' past the cap would
-     * never be selected again and would sit there invisible, un-retried, and
-     * counted as pending. 'failed' puts it in front of somebody instead.
+     * isRetryableFailure asks whether repeating this exact send could ever
+     * work. Without it a number Meta has already refused burns every remaining
+     * attempt, billed, to learn what the first one said — and the identical
+     * failure arriving moments later as a receipt would have stopped at one.
+     * That asymmetry is the thing this whole change set exists to remove, and
+     * it pointed this way round until the Graph error code was kept.
+     *
+     * planRetry then asks whether it is worth doing: not for a personal date,
+     * not past the date it is about, not past the cap. Each refusal is
+     * terminal, and terminal matters as much as the retry does — `attempts`
+     * was already incremented by the claim, so a row left at 'queued' past the
+     * cap would never be selected again and would sit there invisible,
+     * un-retried and counted as pending. 'failed' puts it in front of somebody.
      */
-    const plan = planRetry({
-      eventType: event.event_type,
-      attemptsBurnt: row.attempts + 1,
-      occurrenceDate: row.occurrence_date,
-      now: new Date(),
-      timezone: ctx.timezone,
-    })
+    const errorCode = res.code ?? null
     const reason = res.error ?? res.reason
+    const plan = isRetryableFailure(errorCode, res.error)
+      ? planRetry({
+          eventType: event.event_type,
+          attemptsBurnt: row.attempts + 1,
+          occurrenceDate: row.occurrence_date,
+          now: new Date(),
+          timezone: ctx.timezone,
+        })
+      : PERMANENT_FAILURE
     await releaseReminder(
       admin,
       row.id,
@@ -759,6 +771,7 @@ async function deliverOne(
       plan.retry ? "queued" : "failed",
       suggestion,
       plan.retry ? plan.nextAttemptAt : null,
+      errorCode,
     )
     return "failed"
   }

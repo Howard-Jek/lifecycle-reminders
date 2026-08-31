@@ -46,13 +46,28 @@ export const MAX_ATTEMPTS = RETRY_BACKOFF_DAYS.length + 1
 
 export type RetryPlan =
   | { retry: true; nextAttemptAt: string; inDays: number }
-  | { retry: false; reason: "not-retryable" | "attempts-exhausted" | "past-occurrence" }
+  | {
+      retry: false
+      reason: "not-retryable" | "attempts-exhausted" | "past-occurrence" | "permanent-failure"
+    }
+
+/**
+ * The verdict for a failure that cannot succeed however often it is repeated.
+ *
+ * Produced by the CALLER, not by planRetry: whether a failure is permanent is a
+ * fact about Meta's error code (see isRetryableFailure), and this module
+ * deliberately knows nothing about WhatsApp. Named here so both call sites
+ * spell it the same way and describeGiveUp can explain it.
+ */
+export const PERMANENT_FAILURE: RetryPlan = { retry: false, reason: "permanent-failure" }
 
 /** Why a row was given up on, in words an operator can act on. */
 export function describeGiveUp(reason: Exclude<RetryPlan, { retry: true }>["reason"]): string {
   switch (reason) {
     case "not-retryable":
       return "Not retried — a personal date is only worth sending on the day."
+    case "permanent-failure":
+      return "Not retried — sending this again would fail the same way."
     case "past-occurrence":
       return "Not retried — the next attempt would land after the date itself."
     case "attempts-exhausted":

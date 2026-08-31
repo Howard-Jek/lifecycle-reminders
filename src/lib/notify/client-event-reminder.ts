@@ -82,7 +82,13 @@ export function buildReminderComponents(p: ReminderAlertParams): Record<string, 
 
 export type ReminderAlertResult =
   | { ok: true; whatsappMessageId: string }
-  | { ok: false; reason: "not_configured" | "send_failed"; error?: string }
+  | {
+      ok: false
+      reason: "not_configured" | "send_failed"
+      error?: string
+      /** Meta's error code, when Meta was reached and gave one. */
+      code?: string | null
+    }
 
 /**
  * Send one reminder to one agent's number. Never throws — the caller records
@@ -109,7 +115,7 @@ export async function sendClientEventReminder(
     return { ok: false, reason: "send_failed", error: e instanceof Error ? e.message : String(e) }
   }
 
-  if (!res.ok) return { ok: false, reason: "send_failed", error: res.error }
+  if (!res.ok) return { ok: false, reason: "send_failed", error: res.error, code: res.code }
   return { ok: true, whatsappMessageId: res.whatsappMessageId }
 }
 

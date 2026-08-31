@@ -25,6 +25,24 @@ describe("describeWhatsappError", () => {
     expect(info.title).toMatch(/24-hour/i)
   })
 
+  it("recovers the code from Meta's own Graph format", () => {
+    // "(#131047) …" is what error.message actually contains on a failed send,
+    // and it is the MOST common spelling in production — every synchronous
+    // failure writes it. An earlier parser accepted one optional bracket
+    // character, so "(" was consumed and "#" met a digit slot: the whole send
+    // path silently got the generic message.
+    expect(describeWhatsappError(null, "(#131047) Re-engagement message").title).toMatch(/24-hour/i)
+    expect(describeWhatsappError(null, "(#131026) Message Undeliverable").title).toMatch(
+      /couldn't deliver/i,
+    )
+    expect(isRetryableFailure(null, "(#131026) Message Undeliverable")).toBe(false)
+  })
+
+  it("reads a bare code with no detail", () => {
+    // describeErrors emits "[131026]" when Meta sends a code and nothing else.
+    expect(describeWhatsappError(null, "[131026]").title).toMatch(/couldn't deliver/i)
+  })
+
   it("still recovers the code from the host's colon format", () => {
     // Rows written by the monorepo read "131026: Receiver incapable".
     expect(describeWhatsappError(null, "131026: Receiver incapable").title).toMatch(

@@ -91,7 +91,7 @@ export async function sendGomaTemplate(
     )
 
     const data = (await res.json().catch(() => null)) as
-      | { error?: { message?: string }; messages?: { id?: string }[] }
+      | { error?: { message?: string; code?: number | string }; messages?: { id?: string }[] }
       | null
 
     if (!res.ok) {
@@ -103,13 +103,29 @@ export async function sendGomaTemplate(
         ok: false,
         error: data?.error?.message ?? "Unknown WhatsApp API error",
         statusCode: res.status,
+        // Meta sends the code in the same object as the message and we used to
+        // throw it away, which left the retry decision to a regex over prose.
+        code: data?.error?.code === undefined ? null : String(data.error.code),
       }
     }
 
     const id = data?.messages?.[0]?.id
-    if (!id) return { ok: false, error: "No message ID in WhatsApp response", statusCode: null }
+    if (!id) {
+      return {
+        ok: false,
+        error: "No message ID in WhatsApp response",
+        statusCode: null,
+        code: null,
+      }
+    }
     return { ok: true, whatsappMessageId: id }
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e), statusCode: null }
+    // A transport failure has no Meta code — nothing reached Meta.
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : String(e),
+      statusCode: null,
+      code: null,
+    }
   }
 }

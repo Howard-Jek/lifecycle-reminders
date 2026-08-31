@@ -70,6 +70,14 @@ export async function releaseReminder(
    * scheduled, or it inherits a delay nobody asked for and looks stuck.
    */
   nextAttemptAt: string | null = null,
+  /**
+   * Meta's code for this failure, when there is one.
+   *
+   * Written on every release, including as null, for the same reason
+   * nextAttemptAt is: a row carrying the code from an earlier, different
+   * failure would send whoever reads it after the wrong cause.
+   */
+  errorCode: string | null = null,
 ): Promise<void> {
   const { error: updateErr } = await admin
     .from("reminders")
@@ -77,6 +85,7 @@ export async function releaseReminder(
       status,
       claimed_at: null,
       error: error.slice(0, 500),
+      error_code: errorCode,
       next_attempt_at: nextAttemptAt,
       ...(suggestion ? { suggestion } : {}),
     })
@@ -161,6 +170,7 @@ export async function markReminderSent(
       whatsapp_message_id: whatsappMessageId,
       suggestion,
       error: null,
+      error_code: null,
       // Cleared with the error it belonged to. A delivered row carrying a
       // scheduled retry is a contradiction, and the webhook can still move it
       // back to 'failed' later — from where it is re-scheduled afresh.

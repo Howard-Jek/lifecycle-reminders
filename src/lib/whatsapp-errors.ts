@@ -182,14 +182,23 @@ export function isRetryableFailure(
 }
 
 /**
- * The code at the START of a flattened reason, in either spelling this codebase
- * produces: "[131047] detail" here, "131026: title" in the host.
+ * The code at the START of a flattened reason, in all three spellings that
+ * reach this function:
+ *
+ *   "(#131047) Re-engagement message"  — Meta's Graph API, in error.message
+ *   "[131047] 24h window"              — describeErrors, from a delivery receipt
+ *   "131026: Receiver incapable"       — the host's outreach path
+ *
+ * The Graph form is the one that matters most and is the easiest to miss: a
+ * single optional bracket character matches the "(" and then meets "#" where a
+ * digit is required, so every synchronously-failed send silently fell through
+ * to the generic message. `[[(]?#?` accepts the pair.
  *
  * Anchored deliberately. An unanchored search would read "waited 131026 ms" as
  * a delivery failure and hand the operator confident, wrong advice.
  */
 function leadingCode(errorMessage: string | null | undefined): string | null {
   if (!errorMessage) return null
-  const match = errorMessage.match(/^\s*[[(#]?(\d{2,6})[\])]?\s*[:)\]\s]/)
+  const match = errorMessage.match(/^\s*[[(]?#?(\d{2,6})[\])]?\s*[:)\]\s]/)
   return match ? match[1] : null
 }
