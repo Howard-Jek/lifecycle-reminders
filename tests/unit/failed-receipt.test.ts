@@ -19,6 +19,7 @@ const receipt = (over: Partial<Parameters<typeof resolveFailedReceipt>[0]> = {})
   wamid: "wamid.1",
   status: "failed" as const,
   error: "[131047] Re-engagement message",
+  errorCode: "131047",
   ...over,
 })
 
@@ -34,6 +35,7 @@ describe("resolveFailedReceipt", () => {
       action: "record",
       reminderId: "r1",
       error: "[131047] Re-engagement message",
+      errorCode: "131047",
     })
   })
 
@@ -51,6 +53,14 @@ describe("resolveFailedReceipt", () => {
     const v = resolveFailedReceipt(receipt({ error: null }), owner())
     expect(v).toMatchObject({ action: "record" })
     if (v.action === "record") expect(v.error.length).toBeGreaterThan(0)
+  })
+
+  it("carries the code through untouched, including its absence", () => {
+    // The code is what the retry decision reads. Recovering it by parsing the
+    // sentence would break the day Meta rewords a failure, so it travels beside
+    // the prose rather than inside it.
+    const v = resolveFailedReceipt(receipt({ error: null, errorCode: null }), owner())
+    expect(v).toMatchObject({ action: "record", errorCode: null })
   })
 
   it("ignores the happy states", () => {

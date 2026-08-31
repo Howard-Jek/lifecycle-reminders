@@ -219,7 +219,7 @@ async function recordFailedSends(
 
     const { data, error } = await admin
       .from("reminders")
-      .update({ status: "failed", error: verdict.error })
+      .update({ status: "failed", error: verdict.error, error_code: verdict.errorCode })
       .eq("id", verdict.reminderId)
       // Re-asserted at the write, not merely checked in the verdict above: the
       // row can move between the read and this update, and the whole point of
@@ -343,6 +343,7 @@ async function recordStatusEvents(
         wamid: s.wamid,
         status: s.status,
         error: s.error,
+        error_code: s.errorCode,
         recipient: s.recipient,
         reminder_id: owner?.id ?? null,
         business_id: owner?.businessId ?? null,

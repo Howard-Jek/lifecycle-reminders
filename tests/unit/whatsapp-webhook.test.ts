@@ -157,6 +157,9 @@ describe("parseWebhookBatch", () => {
         wamid: "wamid.ABC",
         status: "failed",
         error: "[131047] 24h window",
+        // Beside the prose, not parsed back out of it: the retry decision reads
+        // the code, and the "[131047]" prefix is a presentation choice.
+        errorCode: "131047",
         recipient: null,
         occurredAt: null,
       },
@@ -510,6 +513,7 @@ describe("statuses carry who and when, so a receipt can be recorded", () => {
       wamid: "wamid.Q",
       status: "delivered",
       error: null,
+      errorCode: null,
       recipient: "6581115611",
       occurredAt: "2025-08-19T10:40:00.000Z",
     })
@@ -566,5 +570,39 @@ describe("a delivery failure is written where the row can still be reached", () 
     // not applied to is worse than no record at all.
     const reminderReads = source.match(/\.from\("reminders"\)\s*\n\s*\.select\(/g) ?? []
     expect(reminderReads).toHaveLength(1)
+  })
+})
+
+describe("the failure code survives as a value, not only as prose", () => {
+  const failure = (errors: unknown[]) =>
+    parseWebhookBatch({
+      object: "whatsapp_business_account",
+      entry: [
+        {
+          changes: [
+            { field: "messages", value: { statuses: [{ id: "w.1", status: "failed", errors }] } },
+          ],
+        },
+      ],
+    }).statuses[0]
+
+  it("reads the code from errors[], not from the flattened string", () => {
+    // Meta sends it as a number; every consumer wants a map key.
+    expect(failure([{ code: 131026, title: "Receiver incapable" }])?.errorCode).toBe("131026")
+  })
+
+  it("takes the first code when Meta sends several", () => {
+    // Meta orders them cause-first, and a row has one reason.
+    expect(failure([{ code: 131047 }, { code: 131026 }])?.errorCode).toBe("131047")
+  })
+
+  it("is null when Meta gives no code, rather than an empty string", () => {
+    // A failure with no code is still a failure; "" would be a code that
+    // matches nothing in the guidance map and reads as though one was sent.
+    expect(failure([{ title: "Something went wrong" }])?.errorCode).toBeNull()
+  })
+
+  it("skips a leading error that carries no code", () => {
+    expect(failure([{ title: "no code here" }, { code: 130429 }])?.errorCode).toBe("130429")
   })
 })

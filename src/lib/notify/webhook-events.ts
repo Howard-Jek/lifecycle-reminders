@@ -20,6 +20,16 @@ export type StatusEvent = {
   status: "sent" | "delivered" | "read" | "failed"
   /** Present on `failed`. Already flattened to one human-readable line. */
   error: string | null
+  /**
+   * Meta's code for the FIRST error, kept apart from the prose.
+   *
+   * `error` embeds it as a "[131047]" prefix, which is right for reading and
+   * wrong for deciding: whether a failure may be retried is a fact about the
+   * code, and recovering it by pattern-matching a sentence breaks the day the
+   * wording changes. The first error only — Meta orders them with the cause
+   * first, and a row has one reason.
+   */
+  errorCode: string | null
   /** Who Meta says it was for, E.164 without the "+". */
   recipient: string | null
   /** When Meta says the transition happened, as ISO. */
@@ -89,6 +99,24 @@ function describeErrors(value: unknown): string | null {
   // Bounded: this lands in `reminders.error`, which the inbox renders.
   const joined = parts.join("; ")
   return joined ? joined.slice(0, 500) : null
+}
+
+/**
+ * The code Meta blamed, as a bare string.
+ *
+ * Read from the same `errors[]` describeErrors flattens, rather than parsed
+ * back out of its output: the prefix format is a presentation choice and this
+ * must not depend on it. Stringified because Meta sends it as a number and
+ * every consumer wants a map key.
+ */
+function firstErrorCode(value: unknown): string | null {
+  for (const raw of asArray(value)) {
+    const code = asRecord(raw).code
+    if (code === undefined || code === null) continue
+    const text = String(code).trim()
+    if (text) return text
+  }
+  return null
 }
 
 function toIso(timestamp: unknown): string | null {
@@ -197,6 +225,7 @@ export function parseWebhookBatch(payload: unknown, scope: WebhookScope = {}): W
           wamid,
           status: state as StatusEvent["status"],
           error: describeErrors(status.errors),
+          errorCode: firstErrorCode(status.errors),
           recipient: asString(status.recipient_id),
           occurredAt: toIso(status.timestamp),
         })

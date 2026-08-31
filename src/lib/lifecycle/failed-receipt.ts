@@ -33,6 +33,8 @@ export type FailureReceipt = {
   status: "sent" | "delivered" | "read" | "failed"
   /** Meta's reason, pre-truncated. Null when Meta sends a bare failure. */
   error: string | null
+  /** Meta's code for that reason, kept apart from the prose. */
+  errorCode: string | null
 }
 
 /** The reminder that owns the wamid, as it stands right now. */
@@ -42,7 +44,7 @@ export type ReceiptOwner = {
 }
 
 export type FailedReceiptVerdict =
-  | { action: "record"; reminderId: string; error: string }
+  | { action: "record"; reminderId: string; error: string; errorCode: string | null }
   | { action: "skip"; reason: "not-a-failure" | "unowned" | "already-resolved" }
 
 /**
@@ -83,5 +85,6 @@ export function resolveFailedReceipt(
     action: "record",
     reminderId: owner.id,
     error: receipt.error ?? NO_REASON_GIVEN,
+    errorCode: receipt.errorCode,
   }
 }
