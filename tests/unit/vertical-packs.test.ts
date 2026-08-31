@@ -6,6 +6,7 @@ import {
   type VerticalPack,
 } from "@/lib/lifecycle/vertical-packs"
 import { isHoldingType } from "@/lib/lifecycle/event-types"
+import { buildIndustryBlock } from "@/lib/lifecycle/suggest-message"
 import { VERTICALS } from "@/lib/lifecycle/verticals"
 import { MAX_OVERDUE_DAYS } from "@/lib/lifecycle/plan-reminders"
 
@@ -201,5 +202,23 @@ describe("the deliberate exceptions, pinned so they read as decisions", () => {
       if (pack.key === "insurance") continue
       expect(pack.framing.toLowerCase(), String(v)).not.toMatch(/\bpolicy\b|\bpolicies\b/)
     }
+  })
+})
+
+describe("the drafting prompt speaks the operator's industry", () => {
+  it("wraps the framing in its own block, not as one more style rule", () => {
+    // A pack that carries a PROHIBITION — dental's "never name a procedure" —
+    // must not read as an item in a list of stylistic preferences.
+    const block = buildIndustryBlock(packForVertical("dental").framing)
+    expect(block).toMatch(/^<industry>/)
+    expect(block).toMatch(/<\/industry>$/)
+    expect(block).toMatch(/never/i)
+  })
+
+  it("emits nothing at all rather than an empty block", () => {
+    // An empty <industry></industry> is a claim that the industry is unknown,
+    // which is different from not raising the subject.
+    expect(buildIndustryBlock("")).toBe("")
+    expect(buildIndustryBlock("   ")).toBe("")
   })
 })

@@ -222,6 +222,7 @@ describe("buildSuggestionPrompt", () => {
       leadContext: { plan: "Enhanced" },
       agentName: "Jasmine",
       guardrails: NO_GUARDRAILS,
+      industryFraming: "",
     })
     expect(p).toContain("Goh Jia Hui")
     expect(p).toContain("policy_expiry")
@@ -239,6 +240,7 @@ describe("buildSuggestionPrompt", () => {
       leadContext: {},
       agentName: null,
       guardrails: NO_GUARDRAILS,
+      industryFraming: "",
     })
     expect(p).not.toContain("<script>")
     expect(p).toContain("&lt;script&gt;")
@@ -254,6 +256,7 @@ describe("buildSuggestionPrompt", () => {
       leadContext: {},
       agentName: null,
       guardrails: NO_GUARDRAILS,
+      industryFraming: "",
     })
     expect(p).not.toContain("[object Object]")
     expect(p).toContain("keep")

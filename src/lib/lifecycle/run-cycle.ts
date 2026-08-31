@@ -36,6 +36,7 @@ import {
 import { todayInTimezone, daysBetween } from "./occurrence"
 import { planRetry, describeGiveUp, MAX_ATTEMPTS, PERMANENT_FAILURE } from "./retry-policy"
 import { attributeOrphanReceipts } from "@/lib/notify/reminder-receipts"
+import { packForVertical } from "./vertical-packs"
 import { isRetryableFailure } from "@/lib/whatsapp-errors"
 import { humaniseEventType } from "./labels"
 import { draftSuggestion, fallbackSuggestion } from "./suggest-message"
@@ -224,7 +225,7 @@ async function materialiseAll(admin: SupabaseClient) {
   let inserted = 0
 
   for (const [businessId, tenantRules] of byTenant) {
-    const timezone = await loadTimezone(admin, businessId)
+    const { timezone } = await loadTenantBasics(admin, businessId)
     const today = todayInTimezone(new Date(), timezone)
 
     const eventTypes = Array.from(new Set(tenantRules.map((r) => r.event_type)))
@@ -297,17 +298,22 @@ async function fetchAllEvents(
  * Never throws and never returns empty: `Intl` handed an empty zone throws a
  * RangeError, which would take down the whole tick over one missing column.
  */
-async function loadTimezone(admin: SupabaseClient, businessId: string): Promise<string> {
+async function loadTenantBasics(
+  admin: SupabaseClient,
+  businessId: string,
+): Promise<{ timezone: string; vertical: string | null }> {
+  // One row, two facts. `vertical` decides how the drafting prompt describes
+  // this operator's business; it rides on the query the timezone already needed.
   const { data, error } = await admin
     .from("businesses")
-    .select("timezone")
+    .select("timezone, vertical")
     .eq("id", businessId)
-    .maybeSingle<{ timezone: string | null }>()
+    .maybeSingle<{ timezone: string | null; vertical: string | null }>()
   if (error) {
-    console.error(`[lifecycle] timezone lookup failed for ${businessId}: ${error.message}`)
-    return DEFAULT_TIMEZONE
+    console.error(`[lifecycle] tenant lookup failed for ${businessId}: ${error.message}`)
+    return { timezone: DEFAULT_TIMEZONE, vertical: null }
   }
-  return data?.timezone || DEFAULT_TIMEZONE
+  return { timezone: data?.timezone || DEFAULT_TIMEZONE, vertical: data?.vertical ?? null }
 }
 
 async function loadAssignments(
@@ -614,8 +620,8 @@ async function deliverDue(admin: SupabaseClient, options: CycleOptions = {}) {
 }
 
 async function loadDeliveryContext(admin: SupabaseClient, businessId: string) {
-  const [timezone, { data: memberRows }, { data: ruleRows }] = await Promise.all([
-    loadTimezone(admin, businessId),
+  const [basics, { data: memberRows }, { data: ruleRows }] = await Promise.all([
+    loadTenantBasics(admin, businessId),
     admin.from("team_members").select("*").eq("business_id", businessId),
     admin.from("reminder_rules").select("*").eq("business_id", businessId),
   ])
@@ -636,7 +642,14 @@ async function loadDeliveryContext(admin: SupabaseClient, businessId: string) {
   const ownerNumber =
     allMembers.find((m) => m.role === "owner" && m.active)?.whatsapp_number?.trim() || null
 
-  return { timezone, members, rules, ownerNumber, guardrails: NO_GUARDRAILS }
+  return {
+    timezone: basics.timezone,
+    members,
+    rules,
+    ownerNumber,
+    guardrails: NO_GUARDRAILS,
+    industryFraming: packForVertical(basics.vertical).framing,
+  }
 }
 
 async function deliverOne(
@@ -701,6 +714,7 @@ async function deliverOne(
         leadContext: (lead.context ?? {}) as Record<string, unknown>,
         agentName: member?.display_name ?? null,
         guardrails: ctx.guardrails,
+      industryFraming: ctx.industryFraming,
       })
     : null
 

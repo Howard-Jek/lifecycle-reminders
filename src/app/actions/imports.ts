@@ -6,6 +6,7 @@ import { createAdminClient } from "@/lib/supabase/admin"
 import { normalizePhone, parseCalendarDate, titleCaseName } from "@/lib/sanitize"
 import { ingestContacts, type IngestContact, type IngestRejection } from "@/lib/import/ingest"
 import { readSheet, guessHeaders, eventTypeFromHeader, detectFormatForColumn, ImportFileError } from "@/lib/import/read-file"
+import { packForVertical } from "@/lib/lifecycle/vertical-packs"
 import type { ActionResult } from "./team-members"
 
 export type EventColumnChoice = {
@@ -76,7 +77,20 @@ export async function previewSheet(formData: FormData): Promise<ActionResult<She
 
   if (sheet.rows.length === 0) return { ok: false, error: "That file has no data rows." }
 
-  const guess = guessHeaders(sheet.headers)
+  // The operator's industry widens what counts as a date column — a dental
+  // sheet's "Recall" is invisible to the generic patterns. It cannot rename
+  // anything; see guessHeaders.
+  const { data: business } = await createAdminClient()
+    .from("businesses")
+    .select("vertical")
+    .eq("id", tenant.businessId)
+    .maybeSingle<{ vertical: string | null }>()
+  const pack = packForVertical(business?.vertical)
+
+  const guess = guessHeaders(
+    sheet.headers,
+    pack.eventTypes.flatMap((t) => t.synonyms),
+  )
   const eventColumns: EventColumnChoice[] = guess.dateColumns.map((header) => {
     const detected = detectFormatForColumn(sheet.rows, header)
     return {
