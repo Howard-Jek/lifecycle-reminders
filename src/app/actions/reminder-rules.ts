@@ -4,7 +4,8 @@ import { revalidatePath } from "next/cache"
 import { requireTenant } from "@/lib/tenant"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { SEND_WINDOWS, type SendWindow } from "@/lib/types"
-import { DEFAULT_INSURANCE_RULES, type ReminderRule } from "@/lib/lifecycle/types"
+import type { ReminderRule } from "@/lib/lifecycle/types"
+import { packForVertical } from "@/lib/lifecycle/vertical-packs"
 import type { ActionResult } from "./team-members"
 
 export async function listReminderRules(): Promise<ReminderRule[]> {
@@ -147,17 +148,30 @@ export async function deleteReminderRule(id: string): Promise<ActionResult> {
 }
 
 /**
- * Seed the insurance playbook.
+ * Seed this business's industry playbook.
  *
  * Data, not code: these land in reminder_rules as ordinary rows the operator
- * can edit or delete. Insurance is the first configuration of the engine, not
- * its shape — a warranty expiry or a visa renewal is the same five rows with
- * different words.
+ * can edit or delete. Which rows depends on `businesses.vertical` — insurance
+ * was only ever the first configuration of the engine, not its shape, and a
+ * warranty expiry or a course certification is the same handful of rows with
+ * different words and different offsets.
+ *
+ * A business with no industry chosen gets the generic pack, which is a complete
+ * product rather than a placeholder.
  */
-export async function seedInsuranceRules(): Promise<ActionResult<number>> {
+export async function seedStarterRules(): Promise<ActionResult<number>> {
   const tenant = await requireTenant()
 
-  const rows = DEFAULT_INSURANCE_RULES.map((rule) => ({
+  const admin = createAdminClient()
+  const { data: business } = await admin
+    .from("businesses")
+    .select("vertical")
+    .eq("id", tenant.businessId)
+    .maybeSingle<{ vertical: string | null }>()
+
+  const pack = packForVertical(business?.vertical)
+
+  const rows = pack.rules.map((rule) => ({
     business_id: tenant.businessId,
     event_type: rule.event_type,
     offset_days: rule.offset_days,
@@ -169,7 +183,7 @@ export async function seedInsuranceRules(): Promise<ActionResult<number>> {
 
   // ignoreDuplicates: seeding twice must not error, and must never overwrite a
   // rule the operator has since tuned.
-  const { data, error } = await createAdminClient()
+  const { data, error } = await admin
     .from("reminder_rules")
     .upsert(rows, { onConflict: "business_id,event_type,offset_days", ignoreDuplicates: true })
     .select("id")

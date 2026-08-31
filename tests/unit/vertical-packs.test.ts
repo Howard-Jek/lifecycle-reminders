@@ -7,7 +7,6 @@ import {
 } from "@/lib/lifecycle/vertical-packs"
 import { isHoldingType } from "@/lib/lifecycle/event-types"
 import { VERTICALS } from "@/lib/lifecycle/verticals"
-import { DEFAULT_INSURANCE_RULES } from "@/lib/lifecycle/types"
 import { MAX_OVERDUE_DAYS } from "@/lib/lifecycle/plan-reminders"
 
 /**
@@ -45,12 +44,26 @@ describe("packForVertical", () => {
 })
 
 describe("the insurance pack is exactly what was seeded before packs existed", () => {
-  it("matches DEFAULT_INSURANCE_RULES", () => {
-    // If this fails, the refactor changed behaviour for the live tenant.
-    const pack = packForVertical("insurance")
+  /**
+   * Written out as a literal rather than compared against the old constant.
+   *
+   * DEFAULT_INSURANCE_RULES is gone — keeping it alive purely so a test could
+   * compare the pack to it would be the pack testing itself. These five rows
+   * are what the live tenant has been getting, transcribed once, so a change to
+   * the pack has to argue with a fixed record instead of moving in step with it.
+   */
+  const HISTORIC = [
+    "birthday:7:morning",
+    "birthday:0:morning",
+    "policy_expiry:30:morning",
+    "policy_expiry:7:morning",
+    "policy_review:14:afternoon",
+  ]
+
+  it("still seeds exactly those five rules", () => {
     const norm = (r: { event_type: string; offset_days: number; send_window: string }) =>
       `${r.event_type}:${r.offset_days}:${r.send_window}`
-    expect(pack.rules.map(norm).sort()).toEqual([...DEFAULT_INSURANCE_RULES].map(norm).sort())
+    expect(packForVertical("insurance").rules.map(norm).sort()).toEqual([...HISTORIC].sort())
   })
 })
 

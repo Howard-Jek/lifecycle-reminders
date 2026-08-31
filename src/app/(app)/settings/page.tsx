@@ -5,6 +5,7 @@ import { getBusinessProfile } from "@/app/actions/business"
 import { getWhatsappConfig, getTemplateStatus } from "@/app/actions/whatsapp"
 import type { TemplateStatus } from "@/lib/notify/template-admin"
 import { RulesClient } from "./rules-client"
+import { packForVertical } from "@/lib/lifecycle/vertical-packs"
 import { TokensClient } from "./tokens-client"
 import { WhatsappClient } from "./whatsapp-client"
 import { TemplateBlock } from "./template-block"
@@ -67,7 +68,7 @@ export default async function SettingsPage() {
         </p>
       </div>
 
-      <RulesClient rules={rules} />
+      <RulesClient rules={rules} packName={packForVertical(profile.vertical).name} />
       <WhatsappClient
         setup={whatsapp}
         templateBlock={
