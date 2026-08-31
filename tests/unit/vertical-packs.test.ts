@@ -150,3 +150,43 @@ describe("holdingLabel", () => {
     expect(holdingLabel(packForVertical("insurance"), [])).toBe("Policies")
   })
 })
+
+describe("the deliberate exceptions, pinned so they read as decisions", () => {
+  it("gives saas no birthday rules while still treating a birthday as personal", () => {
+    // Classification and seeding are separate axes, and this is the case that
+    // proves it. A birthday greeting from a software vendor is off-key, so no
+    // rule — but `birthday` must still never be counted as a subscription or
+    // retried days late.
+    const saas = packForVertical("saas")
+    expect(saas.rules.some((r) => r.event_type === "birthday")).toBe(false)
+    expect(saas.eventTypes.some((t) => t.slug === "birthday")).toBe(true)
+    expect(isHoldingType(saas, "birthday")).toBe(false)
+  })
+
+  it("forbids clinical detail in the dental framing", () => {
+    // The drafting call is handed event.payload and lead.context verbatim, and
+    // a dental sheet may carry a procedure. A WhatsApp naming a patient's
+    // treatment is a health disclosure, and nothing downstream would flag it.
+    const framing = packForVertical("dental").framing
+    expect(framing).toMatch(/never/i)
+    expect(framing).toMatch(/procedure|diagnosis|clinical/i)
+  })
+
+  it("gives every vertical a distinct set of words to describe a holding", () => {
+    // If two industries share a column head, one of them is wearing the
+    // other's vocabulary and the pack is not earning its place.
+    const named = VERTICALS.filter((v) => v !== "other").map((v) => packForVertical(v))
+    const columns = named.map((p) => p.holding.column)
+    expect(new Set(columns).size).toBe(new Set(named).size)
+  })
+
+  it("keeps every pack's framing free of the word `policy` unless it sells policies", () => {
+    // The regression this guards is the obvious one: copying the insurance
+    // pack as a starting point and forgetting to change the prose.
+    for (const v of VERTICALS) {
+      const pack = packForVertical(v)
+      if (pack.key === "insurance") continue
+      expect(pack.framing.toLowerCase(), String(v)).not.toMatch(/\bpolicy\b|\bpolicies\b/)
+    }
+  })
+})
