@@ -16,7 +16,8 @@
     "seed:demo": "tsx scripts/seed-demo.ts",
     "db:push": "supabase db push",
     "db:reset": "supabase db reset",
-    "db:bundle": "tsx scripts/sql-bundle.ts"
+    "db:bundle": "tsx scripts/sql-bundle.ts",
+    "db:schema": "tsx scripts/sql-bundle.ts --out supabase/schema/full.sql && tsx scripts/sql-bundle.ts --addon-only --out supabase/schema/addon.sql"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.64",
