@@ -523,3 +523,48 @@ describe("statuses carry who and when, so a receipt can be recorded", () => {
     expect(batch.statuses[0]).toMatchObject({ recipient: null, occurredAt: null })
   })
 })
+
+describe("a delivery failure is written where the row can still be reached", () => {
+  /**
+   * Source-level, in the style of sandbox-safety.test.ts, because what is under
+   * test is WHERE the predicate sits rather than what a function returns.
+   *
+   * The defect this pins was a scoping mistake with no visible symptom: the
+   * update was scoped to `status = 'sent'` alone, so a failure receipt landing
+   * in the window before markReminderSent() committed matched nothing at all.
+   * The row was requeued by the stuck-claim sweep and retried against a number
+   * Meta had already refused, and the reason — the only explanation anyone ever
+   * gets — went to a log line. Widening it is one word, and losing it again
+   * would be one word too.
+   */
+  const source = readFileSync(
+    join(process.cwd(), "src/app/api/webhooks/whatsapp/route.ts"),
+    "utf8",
+  )
+
+  const failedSends = source.slice(
+    source.indexOf("async function recordFailedSends("),
+    source.indexOf("async function storeInboundMessages("),
+  )
+
+  it("re-asserts the overwritable statuses at the update itself", () => {
+    // Not merely in the verdict: the row can move between the read and the
+    // write, and the predicate is what makes the later writer win.
+    expect(failedSends).toMatch(/\.in\("status", RESOLVABLE_FROM_RECEIPT\)/)
+  })
+
+  it("does not narrow the update to `sent` alone", () => {
+    expect(failedSends).not.toMatch(/\.eq\("status",\s*"sent"\)/)
+  })
+
+  it("delegates the decision rather than branching inline", () => {
+    expect(failedSends).toMatch(/resolveFailedReceipt\(/)
+  })
+
+  it("resolves wamid ownership exactly once for the whole payload", () => {
+    // Two lookups can disagree, and a receipt logged against a reminder it was
+    // not applied to is worse than no record at all.
+    const reminderReads = source.match(/\.from\("reminders"\)\s*\n\s*\.select\(/g) ?? []
+    expect(reminderReads).toHaveLength(1)
+  })
+})
