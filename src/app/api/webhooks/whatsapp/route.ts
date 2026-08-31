@@ -98,11 +98,19 @@ export async function POST(request: Request) {
 
   try {
     const admin = createAdminClient()
-    const [failed, stored] = await Promise.all([
+    const [failed, stored, recorded] = await Promise.all([
       recordFailedSends(admin, statuses),
       storeInboundMessages(admin, messages),
+      recordStatusEvents(admin, statuses),
     ])
-    return NextResponse.json({ ok: true, statuses: statuses.length, failed, stored, skipped })
+    return NextResponse.json({
+      ok: true,
+      statuses: statuses.length,
+      failed,
+      stored,
+      recorded,
+      skipped,
+    })
   } catch (err) {
     // 500 so Meta RETRIES. The alternative — swallow it and answer 200 — loses
     // the payload permanently, because there is no way to ask Meta for it
@@ -252,5 +260,59 @@ async function storeInboundMessages(admin: Admin, messages: InboundMessage[]): P
     .select("id")
 
   if (error) throw new Error(`storing inbound messages: ${error.message}`)
+  return data?.length ?? 0
+}
+
+
+/**
+ * Keep every receipt, not only the ones we act on.
+ *
+ * `sent`, `delivered` and `read` were previously parsed and dropped, on the
+ * reasoning that no column and no screen wanted them. The cost of that showed
+ * up the first time a message was accepted with a real id and never arrived:
+ * nothing anywhere could say whether Meta had reported a thing. "No receipt
+ * arrived" and "delivered, and we threw it away" looked identical, and the
+ * difference was the whole diagnosis.
+ *
+ * Best-effort, and deliberately last: this is a record, and failing to write
+ * one must never cost the caller the status update that ran beside it.
+ */
+async function recordStatusEvents(admin: Admin, statuses: StatusEvent[]): Promise<number> {
+  if (statuses.length === 0) return 0
+
+  // Attribute to a reminder where one owns the wamid. A test send matches
+  // nothing and is still worth keeping — that is precisely the case that was
+  // impossible to see before.
+  const { data: owners } = await admin
+    .from("reminders")
+    .select("id, business_id, whatsapp_message_id")
+    .in("whatsapp_message_id", statuses.map((s) => s.wamid))
+
+  const byWamid = new Map(
+    (owners ?? []).map((r) => [
+      r.whatsapp_message_id as string,
+      { id: r.id as string, businessId: r.business_id as string },
+    ]),
+  )
+
+  const { data, error } = await admin.from("whatsapp_status_events").insert(
+    statuses.map((s) => {
+      const owner = byWamid.get(s.wamid)
+      return {
+        wamid: s.wamid,
+        status: s.status,
+        error: s.error,
+        recipient: s.recipient,
+        reminder_id: owner?.id ?? null,
+        business_id: owner?.businessId ?? null,
+        occurred_at: s.occurredAt,
+      }
+    }),
+  ).select("id")
+
+  if (error) {
+    console.error(`[whatsapp-webhook] could not record status events: ${error.message}`)
+    return 0
+  }
   return data?.length ?? 0
 }

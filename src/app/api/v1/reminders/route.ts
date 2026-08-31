@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { withApiToken, readLimit, readOffset } from "@/lib/api/handler"
 import { ok, badRequest } from "@/lib/api/respond"
 import { toPublicReminder, type PublicReminder } from "@/lib/api/serialize"
-import { ATTENTION_FILTER } from "@/lib/lifecycle/inbox-filters"
+import { ATTENTION_FILTER } from "@/lib/lifecycle/reminder-filters"
 
 /**
  * GET /api/v1/reminders — what the engine has decided is worth a conversation.

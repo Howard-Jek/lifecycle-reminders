@@ -19,6 +19,22 @@ export function NavLink({ href, label }: { href: string; label: string }) {
   return (
     <Link
       href={href}
+      /**
+       * No viewport prefetch. Every nav link is visible on every screen, so the
+       * default prefetched ALL SIX of them — and each one is a full server
+       * render that runs that page's database queries.
+       *
+       * Measured in production: loading /reminders fired eleven speculative
+       * renders totalling 3,755ms of server work, several routes twice, to
+       * display one page that costs ~500ms on its own. On serverless that work
+       * competes with the render the operator is actually waiting for, which is
+       * why switching tabs felt slow while TTFB measured 16ms.
+       *
+       * Next still prefetches on hover and on touchstart, so the pointer moving
+       * toward a link buys most of the latency back — the difference is that
+       * the work now follows an intention instead of preceding all six.
+       */
+      prefetch={false}
       aria-current={active ? "page" : undefined}
       className={cn(
         "inline-flex h-7 shrink-0 items-center justify-center whitespace-nowrap rounded-lg px-2.5 text-[0.8rem] font-medium transition-colors",

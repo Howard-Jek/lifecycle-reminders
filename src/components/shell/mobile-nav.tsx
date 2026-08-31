@@ -74,6 +74,10 @@ export function MobileNav({
             <DropdownMenuItem key={item.href} asChild>
               <Link
                 href={item.href}
+                // Same reason as NavLink: opening this menu reveals all six at
+                // once, and a phone is the worst place to spend six background
+                // page renders. Hover/touch prefetch still applies.
+                prefetch={false}
                 aria-current={active ? "page" : undefined}
                 className={cn(active ? "font-medium text-foreground" : "text-muted-foreground")}
               >

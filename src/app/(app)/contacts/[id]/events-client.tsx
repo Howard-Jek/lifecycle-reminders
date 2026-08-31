@@ -419,10 +419,9 @@ export function EventsClient({
                   <>
                     <span className="text-xs text-muted-foreground">Remove this date?</span>
                     <Button
-                      variant="ghost"
+                      variant="destructive"
                       size="xs"
                       disabled={pending}
-                      className="text-destructive hover:bg-destructive/10 hover:text-destructive"
                       onClick={() => {
                         setConfirmingId(null)
                         run(() => deleteContactEvent(contactId, event.id))

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { createClient } from "@supabase/supabase-js"
 import { MAX_ATTEMPTS } from "@/lib/lifecycle/retry-policy"
-import { ATTENTION_FILTER } from "@/lib/lifecycle/inbox-filters"
+import { ATTENTION_FILTER } from "@/lib/lifecycle/reminder-filters"
 
 /**
  * The reminder queue is addressed through PostgREST filter STRINGS, and a

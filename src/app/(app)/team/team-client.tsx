@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useRef, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { CalendarPlus, Plus, RotateCw, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -15,8 +15,10 @@ import {
   setTeamMemberActive,
   issueCalendarFeed,
   revokeCalendarFeed,
+  sendTestMessage,
   type MemberInput,
 } from "@/app/actions/team-members"
+import { TestMessagePanel, type TestTarget } from "./test-message-panel"
 import type { TeamMember } from "@/lib/lifecycle/types"
 
 const BLANK: MemberInput = {
@@ -29,9 +31,12 @@ const BLANK: MemberInput = {
 export function TeamClient({
   members,
   feeds,
+  dryRun,
 }: {
   members: TeamMember[]
   feeds: Record<string, string>
+  /** Read on the server: the panel must say so before asking to spend money. */
+  dryRun: boolean
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -40,9 +45,94 @@ export function TeamClient({
   const [editingId, setEditingId] = useState<string | null>(null)
   /** Shown once, then gone: only the hash is stored. */
   const [freshUrl, setFreshUrl] = useState<{ memberId: string; url: string } | null>(null)
+  /** A test send waiting to be confirmed. Never sends on its own. */
+  const [testTarget, setTestTarget] = useState<TestTarget | null>(null)
+  const [testNotice, setTestNotice] = useState<{ tone: "sent" | "dry"; text: string } | null>(null)
+  /**
+   * Whether THIS action is in flight, as distinct from useTransition's
+   * `pending`, which is true for every action on the page. Sharing the one flag
+   * made the panel's button read "Sending…" while an unrelated calendar feed
+   * was being issued — a message about spending money, describing something
+   * else entirely.
+   */
+  const [sending, setSending] = useState(false)
+  /**
+   * Where focus was when the offer was staged, so it can go back.
+   *
+   * Without this, dismissing sent focus to <body> and the viewport to the top
+   * of the document — measured ~950px away from the row the operator was
+   * working on, with a keyboard user's next Tab restarting at the page header.
+   */
+  const returnFocus = useRef<{ el: HTMLElement | null; rowOf: string | null }>({
+    el: null,
+    rowOf: null,
+  })
+
+  function stageOffer(next: TestTarget) {
+    returnFocus.current = {
+      el: document.activeElement as HTMLElement | null,
+      // The element captured above is usually GONE by the time we restore: from
+      // the row menu it is the menu item, which unmounts with the menu, and
+      // from Add member it is the Save button, which unmounts with the form.
+      // Measured: focus landed on <body> every time. So the member's own ⋯
+      // trigger is recorded as the thing to come back to — it is on the row the
+      // operator was working on, and it outlives both.
+      rowOf: next.name,
+    }
+    setTestTarget(next)
+  }
+
+  function restoreFocus() {
+    const { el, rowOf } = returnFocus.current
+    returnFocus.current = { el: null, rowOf: null }
+    if (el?.isConnected) {
+      el.focus()
+      return
+    }
+    if (!rowOf) return
+    // Matched on the exact label rather than built into a selector, so a name
+    // containing a quote cannot break the query.
+    const label = `Actions for ${rowOf}`
+    const trigger = Array.from(document.querySelectorAll<HTMLElement>("button[aria-label]")).find(
+      (b) => b.getAttribute("aria-label") === label,
+    )
+    trigger?.focus()
+  }
+
+  function dismissOffer() {
+    setTestTarget(null)
+    restoreFocus()
+  }
+
+  function clearNotices() {
+    setError(null)
+    setTestNotice(null)
+  }
+
+  /**
+   * Drop a staged offer, because the row it describes may no longer say what
+   * the panel says.
+   *
+   * The panel shows the number the message will go to — that is its whole job,
+   * since this is where the cost is stated. Edit the member behind it and that
+   * snapshot is stale: the send re-reads the row and goes to the NEW number,
+   * having asked about the old one.
+   */
+  /**
+   * Invalidate a staged offer WITHOUT moving focus.
+   *
+   * Called when some other action starts, not when the operator dismisses —
+   * they have just clicked something else, and pulling focus back to the row
+   * that opened the offer would take it off the control they are using.
+   */
+  function dropOffer() {
+    setTestTarget(null)
+    returnFocus.current = { el: null, rowOf: null }
+  }
 
   function run(fn: () => Promise<{ ok: true } | { ok: false; error: string }>) {
-    setError(null)
+    clearNotices()
+    dropOffer()
     startTransition(async () => {
       const result = await fn()
       if (!result.ok) {
@@ -52,6 +142,76 @@ export function TeamClient({
       setDraft(null)
       setEditingId(null)
       router.refresh()
+    })
+  }
+
+  /** Save, and — for a NEW member only — offer to prove the number works. */
+  function saveMember(input: MemberInput) {
+    clearNotices()
+    dropOffer()
+    startTransition(async () => {
+      // The two branches stay apart rather than sharing one awaited result:
+      // only the create returns a row, and collapsing them costs the narrowing
+      // that makes reading it safe.
+      if (editingId) {
+        const result = await updateTeamMember(editingId, input)
+        if (!result.ok) {
+          setError(result.error)
+          return
+        }
+      } else {
+        const result = await createTeamMember(input)
+        if (!result.ok) {
+          setError(result.error)
+          return
+        }
+        stageOffer({
+          id: result.data.id,
+          name: result.data.display_name,
+          number: result.data.whatsapp_number,
+          justAdded: true,
+        })
+      }
+      setDraft(null)
+      setEditingId(null)
+      router.refresh()
+    })
+  }
+
+  function runTestSend(target: TestTarget) {
+    clearNotices()
+    setSending(true)
+    startTransition(async () => {
+      const result = await sendTestMessage(target.id)
+      setSending(false)
+      if (!result.ok) {
+        // The panel STAYS. A rejected send is usually transient — Meta being
+        // slow, the template not approved yet — and closing it would make the
+        // retry a hunt back through the row menu, having already lost which
+        // member it was about.
+        setError(result.error)
+        return
+      }
+      setTestTarget(null)
+      restoreFocus()
+      const { displayName, number, inactive } = result.data
+      setTestNotice({
+        tone: result.data.dryRun ? "dry" : "sent",
+        text: result.data.dryRun
+          // Says "server log", NOT "Sandbox": the sandbox transcript is written
+          // by the reminder cycle, and a direct test send never touches it. The
+          // first draft of this sentence sent the operator looking in a place
+          // the message was never going to appear.
+          ? `Nothing was sent — REMINDER_DRY_RUN is on. The message for ${displayName} (${number}) was built and logged on the server, but never reached WhatsApp.`
+          : `Test sent to ${displayName} (${number}). It should arrive within a few seconds; if it does not, that number has no WhatsApp account.` +
+            // A delivered test to a deactivated member proves the number, and
+            // proves nothing about their reminders — the materialiser skips
+            // them entirely. Saying so here is the difference between a useful
+            // test and a falsely reassuring one.
+            (inactive
+              ? ` ${displayName} is inactive, so real reminders will not be sent to them.`
+              : ""),
+      })
     })
   }
 
@@ -95,15 +255,71 @@ export function TeamClient({
         </div>
       )}
 
+      {/* Mounted from the start, and never conditionally. A live region that
+          appears in the DOM at the same moment as its text is announced
+          unreliably — and "your message was not sent" is the sentence that has
+          to reach somebody who cannot see the wash colour. Absolutely
+          positioned by sr-only, so it adds no gap to the stack above. */}
+      <p className="sr-only" role="status" aria-live="polite">
+        {error ?? testNotice?.text ?? ""}
+      </p>
+
+      {/**
+        * ON A CARD, not straight onto the page background — and that is a
+        * contrast fix, not decoration.
+        *
+        * `text-emerald-700` over `bg-emerald-500/10` measures 4.37:1 against
+        * this page's warm --background, and the amber 4.16:1: both under the
+        * 4.5 that AA requires, on the only feedback a billed action gets. The
+        * identical wash passes at 4.62-4.86:1 over --card, which is why every
+        * other notice in the app — including the calendar panel directly above
+        * — already sits on one. The token stays; the surface under it changes.
+        */}
+      {testNotice && (
+        <div className="rounded-xl border bg-card p-4 shadow-sm ring-1 ring-foreground/5">
+          <div className="flex items-start gap-3">
+            <p
+              className={
+                testNotice.tone === "sent"
+                  ? "min-w-0 flex-1 rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-400"
+                  : "min-w-0 flex-1 rounded-lg bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400"
+              }
+            >
+              {testNotice.text}
+            </p>
+            {/* Dismissible, like the calendar panel. It otherwise cleared only
+                when some other action started, so a stale "Test sent to…" was
+                still there on a later visit to the page. */}
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Dismiss this message"
+              onClick={() => setTestNotice(null)}
+            >
+              <X />
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {testTarget && (
+        <TestMessagePanel
+          target={testTarget}
+          dryRun={dryRun}
+          pending={pending}
+          sending={sending}
+          onSend={() => runTestSend(testTarget)}
+          onDismiss={dismissOffer}
+        />
+      )}
+
       {draft && (
         <MemberForm
           value={draft}
           pending={pending}
           onChange={setDraft}
           onCancel={() => setDraft(null)}
-          onSave={() =>
-            run(() => (editingId ? updateTeamMember(editingId, draft) : createTeamMember(draft)))
-          }
+          onSave={() => saveMember(draft)}
         />
       )}
 
@@ -197,6 +413,24 @@ export function TeamClient({
                               email: member.email ?? "",
                               whatsapp_number: member.whatsapp_number,
                               role: member.role as "owner" | "agent",
+                            })
+                          },
+                        },
+                        {
+                          // In the menu rather than a seventh column: unlike
+                          // the calendar feed, a test send leaves no state to
+                          // display, and the table already folds two columns
+                          // away to fit a phone.
+                          label: "Send test message",
+                          disabled: pending,
+                          onSelect: () => {
+                            clearNotices()
+                            setSending(false)
+                            stageOffer({
+                              id: member.id,
+                              name: member.display_name,
+                              number: member.whatsapp_number,
+                              justAdded: false,
                             })
                           },
                         },

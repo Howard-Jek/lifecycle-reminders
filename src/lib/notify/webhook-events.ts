@@ -20,6 +20,10 @@ export type StatusEvent = {
   status: "sent" | "delivered" | "read" | "failed"
   /** Present on `failed`. Already flattened to one human-readable line. */
   error: string | null
+  /** Who Meta says it was for, E.164 without the "+". */
+  recipient: string | null
+  /** When Meta says the transition happened, as ISO. */
+  occurredAt: string | null
 }
 
 /** A message somebody sent TO the platform number. */
@@ -193,6 +197,8 @@ export function parseWebhookBatch(payload: unknown, scope: WebhookScope = {}): W
           wamid,
           status: state as StatusEvent["status"],
           error: describeErrors(status.errors),
+          recipient: asString(status.recipient_id),
+          occurredAt: toIso(status.timestamp),
         })
       }
 

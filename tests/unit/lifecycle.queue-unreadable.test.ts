@@ -39,6 +39,11 @@ afterEach(() => {
  * A Supabase stand-in whose `reminders` reads fail the way PostgREST fails when
  * a filtered column does not exist. Every other table answers normally, so
  * materialisation completes and the only thing under test is the delivery read.
+ *
+ * `businesses` must report one with automatic sending ON. The auto-send gate
+ * queries it before the delivery fetch and returns early when nothing is
+ * enabled, so a stub that leaves it empty passes this test without ever
+ * reaching the line it is meant to be testing.
  */
 function stubAdmin(remindersReadError: { message: string } | null) {
   const from = (table: string) => {
@@ -56,19 +61,27 @@ function stubAdmin(remindersReadError: { message: string } | null) {
       or: () => chain,
       in: () => chain,
       order: () => chain,
+      insert: () => chain,
       update: () => chain,
       upsert: () => chain,
       delete: () => chain,
       maybeSingle: () => Promise.resolve({ data: null, error: null }),
       single: () => Promise.resolve({ data: null, error: null }),
       range: () => Promise.resolve({ data: [], error: null }),
-      // The delivery query terminates on .limit(); the sweeps terminate on await.
-      limit: () =>
-        Promise.resolve(
-          failing ? { data: null, error: remindersReadError } : { data: [], error: null },
-        ),
+      // .limit() is NOT terminal: the auto-send gate appends .in()/.lte()
+      // after it, so returning a promise here breaks the chain the real
+      // builder allows. Everything terminates on await, via then.
+      limit: () => chain,
       then: (r: (v: { data: unknown; error: unknown; count: number }) => unknown) =>
-        r({ data: [], error: null, count: 0 }),
+        r(
+          failing
+            ? { data: null, error: remindersReadError, count: 0 }
+            : {
+                data: table === "businesses" ? [{ id: "biz-1" }] : [],
+                error: null,
+                count: 0,
+              },
+        ),
     }
     return chain
   }

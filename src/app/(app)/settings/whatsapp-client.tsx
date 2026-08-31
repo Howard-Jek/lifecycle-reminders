@@ -1,20 +1,7 @@
-"use client"
-
-import { useState, useTransition } from "react"
-import { useRouter } from "next/navigation"
-import { KeyRound, RefreshCw, Send, ShieldCheck, Webhook } from "lucide-react"
-import { Button } from "@/components/ui/button"
-import { cn } from "@/lib/utils"
-import { describeState } from "@/lib/notify/template-admin"
-import {
-  submitReminderTemplate,
-  refreshTemplateStatus,
-  diagnoseWebhook,
-  registerWebhookWithMeta,
-  checkNumberStatus,
-  registerNumberWithMeta,
-} from "@/app/actions/whatsapp"
-import type { WhatsappSetup, WebhookDiagnosis, NumberDiagnosis } from "@/app/actions/whatsapp"
+import { StatusPill } from "./status-pill"
+import { NumberPanel } from "./number-panel"
+import { WebhookPanel } from "./webhook-panel"
+import type { WhatsappConfig } from "@/app/actions/whatsapp"
 
 /**
  * The WhatsApp number and its template.
@@ -23,38 +10,24 @@ import type { WhatsappSetup, WebhookDiagnosis, NumberDiagnosis } from "@/app/act
  * business through Meta's Embedded Signup because it messages customers as
  * that business; this add-on only ever messages your own agents, so it is a
  * single platform identity and a single template.
+ *
+ * NOT A CLIENT COMPONENT. Step 2 — the template — is passed in as
+ * `templateBlock` so the page can wrap it in Suspense, and the card frame and
+ * the dry-run notice arrive with the rest of Settings instead of behind a
+ * graph.facebook.com round trip.
+ *
+ * Steps 1 and 3 each ask Meta something, so each is its own client component
+ * holding its own transition. Neither fetches on mount: this page must render
+ * without waiting on Graph, which is the whole point of the split.
  */
-export function WhatsappClient({ setup }: { setup: WhatsappSetup }) {
-  const router = useRouter()
-  const [pending, startTransition] = useTransition()
-  const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
-
-  // The webhook probes live in their own transition. They call out to the
-  // public internet and to Meta, so they are slower than everything else on
-  // this page and must not make the template buttons look stuck.
-  const [diagnosis, setDiagnosis] = useState<WebhookDiagnosis | null>(null)
-  const [probing, startProbing] = useTransition()
-
-  // The number's own transition, for the same reason: asking Meta about the
-  // display name is a round trip to Graph and must not freeze the rest.
-  const [number, setNumber] = useState<NumberDiagnosis | null>(null)
-  const [checking, startChecking] = useTransition()
-  const [pin, setPin] = useState("")
-
-  const configured = setup.wabaId && setup.accessToken && setup.phoneNumberId
-  const status = setup.template
-
-  const missing = [
-    !setup.phoneNumberId && "GOMA_NOTIFY_PHONE_NUMBER_ID",
-    !setup.wabaId && "GOMA_NOTIFY_WABA_ID",
-    !setup.accessToken && "GOMA_NOTIFY_ACCESS_TOKEN",
-  ].filter(Boolean) as string[]
-
-  const described = status?.ok ? describeState(status) : null
-  const canSubmit =
-    configured && status?.ok && (status.state === "NOT_SUBMITTED" || status.state === "REJECTED")
-
+export function WhatsappClient({
+  setup,
+  templateBlock,
+}: {
+  setup: WhatsappConfig
+  /** Step 2, streamed. See settings/page.tsx. */
+  templateBlock: React.ReactNode
+}) {
   return (
     <section className="rounded-xl border bg-card p-6 shadow-sm ring-1 ring-foreground/5">
       <div className="mb-6">
@@ -66,377 +39,14 @@ export function WhatsappClient({ setup }: { setup: WhatsappSetup }) {
         </p>
       </div>
 
-      {error && (
-        <p className="mb-4 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
-        </p>
-      )}
-      {notice && (
-        <p className="mb-4 rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-400">
-          {notice}
-        </p>
-      )}
-
       {/* ── Step 1: the number ───────────────────────────────────────────── */}
-      <div className="rounded-lg border bg-background p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h3 className="text-sm font-medium">1 · The number</h3>
-          <StatusPill
-            tone={
-              !configured
-                ? "waiting"
-                : number?.ok
-                  ? number.readyToSend
-                    ? "good"
-                    : "bad"
-                  : "waiting"
-            }
-            /* Not "Connected" until Meta says so. Three env vars being present
-               says nothing about whether the number can send, and a green
-               "Connected" sitting above a declined display name is exactly the
-               reassurance that sends people to debug the wrong thing. */
-            label={
-              !configured
-                ? "Not configured"
-                : number?.ok
-                  ? number.readyToSend
-                    ? "Ready to send"
-                    : "Cannot send"
-                  : "Credentials set"
-            }
-          />
-        </div>
-
-        {configured ? (
-          <div className="mt-3 space-y-3">
-            <p className="text-sm text-muted-foreground">
-              All three credentials are present — which is not the same as being able to send.
-              Meta reviews the display name and the Cloud API registration separately, and either
-              one blocks delivery on its own without any error at send time. Ask Meta which.
-            </p>
-
-            {number && !number.ok && (
-              <p className="text-sm text-destructive">Could not reach Meta: {number.error}</p>
-            )}
-
-            {number?.ok && (
-              <div className="space-y-3 rounded-lg border bg-muted/30 p-3">
-                <div className="flex flex-wrap items-baseline gap-x-2 text-sm">
-                  <span className="font-mono text-brand-ink">
-                    {number.displayPhoneNumber ?? "number not reported"}
-                  </span>
-                  {number.verifiedName && (
-                    <span className="text-muted-foreground">— {number.verifiedName}</span>
-                  )}
-                </div>
-
-                <NumberFacet
-                  label="Display name"
-                  verdict={number.name}
-                  raw={[
-                    ["name_status", number.nameStatus],
-                    ["new_name_status", number.newNameStatus],
-                  ]}
-                />
-                <NumberFacet
-                  label="Registration"
-                  verdict={number.registration}
-                  raw={[
-                    ["status", number.status],
-                    ["platform_type", number.platformType],
-                  ]}
-                />
-              </div>
-            )}
-
-            <Button
-              variant="outline"
-              disabled={checking}
-              onClick={() => {
-                setError(null)
-                setNotice(null)
-                startChecking(async () => {
-                  setNumber(await checkNumberStatus())
-                })
-              }}
-            >
-              <RefreshCw data-icon="inline-start" />
-              {checking ? "Asking Meta…" : number ? "Check again" : "Check number"}
-            </Button>
-
-            <div className="rounded-lg border border-dashed p-3">
-              <p className="text-xs text-muted-foreground">
-                Re-registering clears{" "}
-                <code className="font-mono">#133010 Account not registered</code>. It does{" "}
-                <strong>not</strong> affect a declined display name — that is a separate review at
-                Meta, and nothing here can hurry it or change its mind. Needs the number&rsquo;s
-                six-digit two-step PIN; Meta rate-limits wrong attempts and will lock registration
-                for a period, so do not guess it.
-              </p>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <label htmlFor="wa-pin" className="sr-only">
-                  Six-digit two-step PIN
-                </label>
-                <input
-                  id="wa-pin"
-                  type="password"
-                  inputMode="numeric"
-                  autoComplete="off"
-                  maxLength={6}
-                  placeholder="6-digit PIN"
-                  value={pin}
-                  onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                  className="h-9 w-36 rounded-md border bg-background px-3 font-mono text-sm tracking-widest"
-                />
-                <Button
-                  variant="outline"
-                  disabled={checking || pin.length !== 6}
-                  onClick={() => {
-                    setError(null)
-                    setNotice(null)
-                    startChecking(async () => {
-                      const result = await registerNumberWithMeta(pin)
-                      // Cleared either way. The PIN has done its job, and there
-                      // is no reason for a secret to sit in component state
-                      // through the rest of the session.
-                      setPin("")
-                      if (!result.ok) {
-                        setError(result.error)
-                        return
-                      }
-                      setNumber(result.data)
-                      setNotice(
-                        "Meta accepted the registration. It says nothing about the display name — " +
-                          "check the display-name line above for that.",
-                      )
-                      router.refresh()
-                    })
-                  }}
-                >
-                  <KeyRound data-icon="inline-start" />
-                  {checking ? "Registering…" : "Re-register number"}
-                </Button>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="mt-3 space-y-2 text-sm text-muted-foreground">
-            <p>
-              Add a number in Meta Business Manager, then set{" "}
-              {missing.length === 3 ? "these" : "the missing"} variables and restart:
-            </p>
-            <ul className="space-y-1">
-              {missing.map((name) => (
-                <li key={name} className="font-mono text-xs text-brand-ink">
-                  {name}
-                </li>
-              ))}
-            </ul>
-            <p className="text-xs">
-              Locally that is <code className="font-mono">.env.local</code>; on Vercel it is
-              Project Settings → Environment Variables.
-            </p>
-          </div>
-        )}
-      </div>
+      <NumberPanel setup={setup} />
 
       {/* ── Step 2: the template ─────────────────────────────────────────── */}
-      <div className="mt-4 rounded-lg border bg-background p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h3 className="text-sm font-medium">
-            2 · The template{" "}
-            <code className="ml-1 font-mono text-xs text-muted-foreground">
-              {setup.templateName}
-            </code>
-          </h3>
-          {described && <StatusPill tone={described.tone} label={described.headline} />}
-        </div>
-
-        {!configured ? (
-          <p className="mt-2 text-sm text-muted-foreground">
-            Connect the number first — there is nobody to ask about the template until then.
-          </p>
-        ) : status && !status.ok ? (
-          <p className="mt-2 text-sm text-destructive">
-            Could not reach Meta: {status.error}
-          </p>
-        ) : described ? (
-          <p className="mt-2 max-w-2xl text-sm text-muted-foreground">{described.detail}</p>
-        ) : null}
-
-        {configured && (
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            {canSubmit && (
-              <Button
-                disabled={pending}
-                onClick={() => {
-                  setError(null)
-                  setNotice(null)
-                  startTransition(async () => {
-                    const result = await submitReminderTemplate()
-                    if (result.ok) {
-                      setNotice(
-                        "Submitted. Meta usually answers within the hour — check back with Refresh.",
-                      )
-                      router.refresh()
-                    } else setError(result.error)
-                  })
-                }}
-              >
-                <Send data-icon="inline-start" />
-                {status?.ok && status.state === "REJECTED"
-                  ? "Submit again"
-                  : "Submit for review"}
-              </Button>
-            )}
-            <Button
-              variant="outline"
-              disabled={pending}
-              onClick={() => {
-                setError(null)
-                setNotice(null)
-                startTransition(async () => {
-                  const result = await refreshTemplateStatus()
-                  if (result.ok) router.refresh()
-                  else setError(result.error)
-                })
-              }}
-            >
-              <RefreshCw data-icon="inline-start" />
-              {pending ? "Checking…" : "Refresh status"}
-            </Button>
-          </div>
-        )}
-      </div>
+      {templateBlock}
 
       {/* ── Step 3: the webhook ──────────────────────────────────────────── */}
-      <div className="mt-4 rounded-lg border bg-background p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h3 className="text-sm font-medium">3 · The webhook</h3>
-          <StatusPill
-            tone={setup.webhook.verifyToken && setup.webhook.appSecret ? "good" : "waiting"}
-            label={
-              !setup.webhook.verifyToken
-                ? "No verify token"
-                : !setup.webhook.appSecret
-                  ? "No app secret"
-                  : "Configured"
-            }
-          />
-        </div>
-
-        <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-          Meta reports every possible fault here as one sentence —{" "}
-          <span className="italic">
-            &ldquo;The callback URL or verify token couldn&apos;t be validated&rdquo;
-          </span>{" "}
-          — without saying which URL it called or what came back. These checks run from this
-          deployment, which is the only place that can see both ends.
-        </p>
-
-        <div className="mt-3 rounded-md border bg-muted/40 px-3 py-2">
-          <p className="text-xs text-muted-foreground">
-            Callback URL (from <code className="font-mono">APP_PUBLIC_URL</code>) — this must
-            match Meta&apos;s dashboard character for character
-          </p>
-          <p className="mt-0.5 font-mono text-xs break-all">{setup.webhook.callbackUrl}</p>
-        </div>
-
-        {(!setup.webhook.appId || !setup.webhook.appSecret) && (
-          <div className="mt-3 space-y-1 text-sm text-muted-foreground">
-            <p>
-              Set these to let this page run Meta&apos;s verification itself, instead of
-              pressing the dashboard button and reading a sentence that names no cause:
-            </p>
-            <ul className="space-y-1">
-              {!setup.webhook.appId && (
-                <li className="font-mono text-xs text-brand-ink">GOMA_NOTIFY_APP_ID</li>
-              )}
-              {!setup.webhook.appSecret && (
-                <li className="font-mono text-xs text-brand-ink">GOMA_NOTIFY_APP_SECRET</li>
-              )}
-            </ul>
-            <p className="text-xs">Both are on App Settings → Basic in the Meta dashboard.</p>
-          </div>
-        )}
-
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <Button
-            disabled={probing}
-            onClick={() => {
-              setError(null)
-              setNotice(null)
-              startProbing(async () => {
-                setDiagnosis(await diagnoseWebhook())
-              })
-            }}
-          >
-            <ShieldCheck data-icon="inline-start" />
-            {probing ? "Checking…" : "Verify webhook"}
-          </Button>
-
-          {setup.webhook.appId && setup.webhook.appSecret && (
-            <Button
-              variant="outline"
-              disabled={probing}
-              onClick={() => {
-                setError(null)
-                setNotice(null)
-                startProbing(async () => {
-                  const result = await registerWebhookWithMeta()
-                  if (!result.ok) {
-                    setError(result.error)
-                    return
-                  }
-                  // Re-read afterwards so the panel shows the state Meta is in
-                  // NOW, not the state it was in before the attempt.
-                  const fresh = await diagnoseWebhook()
-                  setDiagnosis({ ...fresh, probes: [result.data, ...fresh.probes] })
-                  if (result.data.tone === "good") {
-                    setNotice("Verified. Meta has registered the callback URL.")
-                    router.refresh()
-                  }
-                })
-              }}
-            >
-              <Webhook data-icon="inline-start" />
-              Ask Meta to verify
-            </Button>
-          )}
-        </div>
-
-        {diagnosis && (
-          <div className="mt-4 space-y-2">
-            {diagnosis.probes.map((probe, i) => (
-              <div key={`${probe.label}-${i}`} className="rounded-md border bg-card p-3">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <p className="text-sm font-medium">{probe.label}</p>
-                  {/* The number, big and monospace: it is the thing an operator
-                      reads out to whoever is helping them. */}
-                  <span
-                    className={cn(
-                      "shrink-0 rounded px-2 py-0.5 font-mono text-sm font-semibold tabular-nums",
-                      probe.tone === "good" &&
-                        "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
-                      probe.tone === "waiting" &&
-                        "bg-amber-500/10 text-amber-700 dark:text-amber-400",
-                      probe.tone === "bad" && "bg-destructive/10 text-destructive",
-                    )}
-                  >
-                    {probe.status ?? "no reply"}
-                  </span>
-                </div>
-                <p className="mt-1 text-sm text-muted-foreground">{probe.detail}</p>
-                {probe.evidence && (
-                  <pre className="mt-2 overflow-x-auto rounded bg-muted px-2 py-1 font-mono text-xs whitespace-pre-wrap break-all">
-                    {probe.evidence}
-                  </pre>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      <WebhookPanel webhook={setup.webhook} />
 
       {/* ── Step 4: going live ───────────────────────────────────────────── */}
       <div className="mt-4 rounded-lg border bg-background p-4">
@@ -460,57 +70,11 @@ export function WhatsappClient({ setup }: { setup: WhatsappSetup }) {
             <>
               Reminders are being delivered. Check that every team member&apos;s number is a real
               WhatsApp account — a send to a number that is not on WhatsApp succeeds at the API
-              level and arrives nowhere.
+              level and arrives nowhere. The Team page can put one on a handset to prove it.
             </>
           )}
         </p>
       </div>
     </section>
-  )
-}
-
-/**
- * One facet of the number's health: a verdict in prose, plus the raw Meta
- * fields it was read from.
- *
- * The raw values are shown deliberately. Prose is what an operator acts on,
- * but `new_name_status: PENDING_REVIEW` is what they paste into a search or
- * quote back to Meta support, and paraphrasing it away costs them that.
- */
-function NumberFacet({
-  label,
-  verdict,
-  raw,
-}: {
-  label: string
-  verdict: { tone: "good" | "waiting" | "bad"; headline: string; detail: string }
-  raw: Array<[string, string | null]>
-}) {
-  return (
-    <div className="border-t pt-3 first:border-t-0 first:pt-0">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="text-sm font-medium">{label}</span>
-        <StatusPill tone={verdict.tone} label={verdict.headline} />
-      </div>
-      <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{verdict.detail}</p>
-      <p className="mt-1 font-mono text-xs text-muted-foreground/80">
-        {raw.map(([key, value]) => `${key}: ${value ?? "—"}`).join("  ·  ")}
-      </p>
-    </div>
-  )
-}
-
-function StatusPill({ tone, label }: { tone: "good" | "waiting" | "bad"; label: string }) {
-  return (
-    <span
-      className={cn(
-        "inline-flex h-6 shrink-0 items-center rounded-full px-2.5 text-xs font-medium",
-        tone === "good" && "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
-        tone === "waiting" && "bg-amber-500/10 text-amber-700 dark:text-amber-400",
-        tone === "bad" && "bg-destructive/10 text-destructive",
-      )}
-    >
-      {label}
-    </span>
   )
 }
