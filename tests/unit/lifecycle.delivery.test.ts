@@ -408,7 +408,12 @@ function stubUpdateCapture(rows: Array<{ id: string }> | null = []) {
       lt: (c: string, v: unknown) => (filters.push(["lt:" + c, v]), chain),
       gte: (c: string, v: unknown) => (filters.push(["gte:" + c, v]), chain),
       is: (c: string, v: unknown) => (filters.push(["is:" + c, v]), chain),
-      select: () => Promise.resolve({ data: rows, error: null }),
+      in: (c: string, v: unknown) => (filters.push(["in:" + c, v]), chain),
+      // Returns the chain rather than resolving, because the sweep now READS
+      // before it writes: it selects the stuck personal-date rows to resolve
+      // them separately. The chain is thenable, so a terminal `.select("id")`
+      // still awaits to the same value it always did.
+      select: () => chain,
       then: (r: (v: { data: unknown; error: null }) => unknown) =>
         r({ data: rows, error: null }),
     }
@@ -446,6 +451,22 @@ describe("requeueStuckClaims (F3 regression)", () => {
     // the same zombie, reached by a different door.
     expect(requeue!.filters).toContainEqual(["lt:attempts", 3])
     expect(requeue!.filters).toContainEqual(["is:whatsapp_message_id", null])
+  })
+
+  it("resolves an interrupted personal date instead of requeueing it", async () => {
+    // planRetry refuses to reschedule a birthday, but that only governs the
+    // FAILURE path. This sweep requeued any stuck row on the attempts cap
+    // alone, so a birthday whose worker died was redelivered on the next tick —
+    // and after an outage, days late. "BIRTHDAYS DO NOT RETRY" was a promise
+    // the one path that never consulted the policy quietly broke.
+    const { admin, updates } = stubUpdateCapture([{ id: "r1" }])
+    const { requeueStuckClaims } = await import("@/lib/lifecycle/claim-reminder")
+    await requeueStuckClaims(admin, 30, 4)
+
+    const personal = updates.find((u) => u.filters.some(([k]) => k === "in:id"))
+    expect(personal, "interrupted personal dates should be resolved by id").toBeTruthy()
+    expect(personal!.patch.status).toBe("failed")
+    expect(personal!.patch.error).toMatch(/not sent late/i)
   })
 
   it("gives exhausted stuck rows a terminal failed state instead", async () => {
