@@ -12,9 +12,22 @@ import type { PostgrestFilterBuilder } from "@supabase/postgrest-js"
 
 export type ReminderScope = {
   tab: "due" | "upcoming" | "sent" | "attention"
-  /** Restrict to one member's reminders. Ignored when memberId is absent. */
-  mine: boolean
-  memberId: string | undefined
+  /**
+   * Whose reminders, as three distinct cases rather than a boolean:
+   *
+   *   undefined  everyone — no member predicate at all
+   *   null       the unassigned rows, which go to the owner's fallback number
+   *   <id>       one agent
+   *
+   * `null` has to be its own case rather than "no filter", because an
+   * unassigned reminder is a real recipient here (see reminders.member_id) and
+   * `.eq("member_id", null)` does not mean IS NULL in PostgREST.
+   *
+   * This replaced a `mine` boolean paired with a member id. One dimension
+   * cannot disagree with itself; two could — `mine: true` with no id silently
+   * filtered nothing while every generated URL claimed it did.
+   */
+  agent: string | null | undefined
   /** Event types to keep, or [] for all. */
   viewTypes: string[]
   /** The instant "due" is measured against; passed in so list and delete agree. */
@@ -72,7 +85,9 @@ export function applyReminderScope<Q extends AnyQuery>(query: Q, scope: Reminder
     q = q.or(ATTENTION_FILTER) as Q
   }
 
-  if (scope.mine && scope.memberId) q = q.eq("member_id", scope.memberId) as Q
+  if (scope.agent !== undefined) {
+    q = (scope.agent === null ? q.is("member_id", null) : q.eq("member_id", scope.agent)) as Q
+  }
 
   return q
 }

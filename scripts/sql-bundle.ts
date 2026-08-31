@@ -35,7 +35,7 @@ const OUT = "supabase/bundle.sql"
  * whatsapp_inbound are excluded today and stay excluded; whether they belong in
  * the host bundle is a separate question from keeping this one consistent.
  */
-const ADDON = ["lifecycle_events", "reminder_retry_schedule"]
+const ADDON = ["lifecycle_events", "reminder_retry_schedule", "reassign_contact_reminders"]
 
 function main() {
   const addonOnly = process.argv.includes("--addon-only")

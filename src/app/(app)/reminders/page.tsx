@@ -13,6 +13,7 @@ import { SetupChecklistSection } from "@/components/onboarding/setup-checklist-s
 import { CHECKLIST_COLLAPSED_COOKIE } from "@/lib/onboarding/steps"
 import { WelcomeTour } from "@/components/onboarding/welcome-tour"
 import { CalendarClock, Inbox, RotateCw } from "lucide-react"
+import { AgentFilter } from "./agent-filter"
 import { isPolicyLike } from "@/lib/lifecycle/event-types"
 import { attemptsRemaining } from "@/lib/lifecycle/retry-policy"
 import { loadEventFacts } from "@/lib/lifecycle/event-facts"
@@ -97,6 +98,10 @@ export default async function RemindersPage({
   const raw = typeof params.tab === "string" ? params.tab : "due"
   const tab: TabId = (TABS.find((t) => t.id === raw)?.id ?? "due") as TabId
   const mine = params.mine === "1"
+  // Whose reminders. "unassigned" is a real selection, not the absence of one:
+  // those rows go to the owner's fallback number and are the ones most likely
+  // to be a mistake, so they have to be findable.
+  const agentParam = typeof params.agent === "string" ? params.agent : undefined
   // Which kind of date. Validated below against the buckets this business
   // actually has, so it can never select a view that is empty by construction.
   const viewParam = typeof params.view === "string" ? params.view : "all"
@@ -235,6 +240,37 @@ export default async function RemindersPage({
   const mineActive = mine && Boolean(myMemberId)
 
   /**
+   * One agent dimension, resolved once.
+   *
+   * `agent` wins over `mine` when both are present — an explicit choice should
+   * not be silently overridden by a toggle the operator left on — and `mine`
+   * survives only as the shortcut it always was, so links shared before this
+   * filter existed still mean what they meant.
+   *
+   * Validated against this business's own members. An id that is not one of
+   * them would return an empty list under a filter naming nobody, which reads
+   * as a broken tab rather than a bad URL.
+   */
+  const agent: string | null | undefined =
+    agentParam === "unassigned"
+      ? null
+      : agentParam && members.has(agentParam)
+        ? agentParam
+        : mineActive
+          ? myMemberId
+          : undefined
+
+  /** What the current selection is called, for the empty state and the chips. */
+  const agentLabel =
+    agent === undefined
+      ? null
+      : agent === null
+        ? "unassigned"
+        : agent === myMemberId
+          ? "yours"
+          : members.get(agent) ?? "that agent"
+
+  /**
    * `reminders` has no event_type — it lives on contact_events, one FK away.
    *
    * `!inner` turns the embed into a JOIN rather than a left-join, so a filter
@@ -271,11 +307,15 @@ export default async function RemindersPage({
    * because `mine` was spelled out at every call site, and a third dimension
    * would have had to be spelled out at all of them again.
    */
-  const hrefFor = (next: { tab?: TabId; mine?: boolean; view?: ViewId }) => {
+  const hrefFor = (next: { tab?: TabId; view?: ViewId; agent?: string | null | undefined }) => {
     const q = new URLSearchParams({ tab: next.tab ?? tab })
-    if (next.mine ?? mineActive) q.set("mine", "1")
     const v = next.view ?? view
     if (v !== "all") q.set("view", v)
+    // Emitted as `agent` even when it came in as `mine=1`, so there is one
+    // spelling of this dimension in every link the page generates.
+    const a = "agent" in next ? next.agent : agent
+    if (a === null) q.set("agent", "unassigned")
+    else if (a !== undefined) q.set("agent", a)
     return `/reminders?${q}`
   }
 
@@ -292,8 +332,7 @@ export default async function RemindersPage({
    */
   const scopeFor = (id: TabId): ReminderScope => ({
     tab: id,
-    mine: mineActive,
-    memberId: myMemberId,
+    agent,
     viewTypes,
     nowIso,
   })
@@ -379,15 +418,15 @@ export default async function RemindersPage({
         <div className="flex flex-wrap items-center gap-2">
           {myMemberId && (
             <Link
-              href={hrefFor({ mine: !mineActive })}
+              href={hrefFor({ agent: agent === myMemberId ? undefined : myMemberId })}
               className={cn(
                 "inline-flex h-8 shrink-0 items-center rounded-lg px-3 text-sm font-medium ring-1 transition-colors",
-                mineActive
+                agent === myMemberId
                   ? "bg-foreground text-background ring-transparent"
                   : "bg-background text-foreground ring-foreground/10 hover:bg-muted",
               )}
             >
-              {mineActive ? "Showing mine" : "Only mine"}
+              {agent === myMemberId ? "Showing mine" : "Only mine"}
             </Link>
           )}
         </div>
@@ -479,7 +518,7 @@ export default async function RemindersPage({
               label={[
                 TABS.find((t) => t.id === tab)?.label ?? "this tab",
                 view === "all" ? null : viewLabel,
-                mineActive ? "yours" : null,
+                agentLabel,
               ]
                 .filter(Boolean)
                 .join(" · ")}
@@ -493,7 +532,7 @@ export default async function RemindersPage({
             label={[
               TABS.find((t) => t.id === tab)?.label ?? "this tab",
               view === "all" ? null : viewLabel,
-              mineActive ? "yours" : null,
+              agentLabel,
             ]
               .filter(Boolean)
               .join(" · ")}
@@ -511,8 +550,9 @@ export default async function RemindersPage({
               Only rendered when there is something to separate: an agency with
               no birthdays on file would get three options returning identical
               rows, which reads as a filter that does not work. */}
+          <div className="ml-auto flex flex-wrap items-center gap-3">
           {buckets.policies.length > 0 && buckets.personal.length > 0 && (
-            <div className="ml-auto flex flex-wrap items-center gap-1" role="group">
+            <div className="flex flex-wrap items-center gap-1" role="group">
               <span className="px-1 text-xs text-muted-foreground" id="view-filter-label">
                 Dates
               </span>
@@ -533,6 +573,28 @@ export default async function RemindersPage({
               ))}
             </div>
           )}
+
+          {/* Only when there is more than one agent to choose between. A solo
+              operator would get a select whose every option returns the same
+              rows, which reads as a filter that does not work. */}
+          {members.size > 1 && (
+            <AgentFilter
+              value={agent === undefined ? "all" : agent === null ? "unassigned" : agent}
+              options={[
+                { value: "all", label: "All agents", href: hrefFor({ agent: undefined }) },
+                ...[...members].map(([id, name]) => ({
+                  value: id,
+                  label: id === myMemberId ? `${name} (you)` : name,
+                  href: hrefFor({ agent: id }),
+                })),
+                // Its own option because these rows have no agent at all: they
+                // fall back to the owner's number, and they are the ones most
+                // worth being able to find.
+                { value: "unassigned", label: "Unassigned", href: hrefFor({ agent: null }) },
+              ]}
+            />
+          )}
+          </div>
         </div>
 
         {error ? (
@@ -549,9 +611,9 @@ export default async function RemindersPage({
             // reintroduced one filter over.
             narrowing={[
               view === "all" ? null : viewLabel.toLowerCase(),
-              mineActive ? "yours" : null,
+              agentLabel,
             ].filter((v): v is string => v !== null)}
-            clearHref={hrefFor({ view: "all", mine: false })}
+            clearHref={hrefFor({ view: "all", agent: undefined })}
           />
         ) : (
           <ul className="divide-y">

@@ -1,7 +1,11 @@
 import { describe, it, expect } from "vitest"
 import { createClient } from "@supabase/supabase-js"
 import { MAX_ATTEMPTS } from "@/lib/lifecycle/retry-policy"
-import { ATTENTION_FILTER } from "@/lib/lifecycle/reminder-filters"
+import {
+  ATTENTION_FILTER,
+  applyReminderScope,
+  type ReminderScope,
+} from "@/lib/lifecycle/reminder-filters"
 
 /**
  * The reminder queue is addressed through PostgREST filter STRINGS, and a
@@ -80,5 +84,44 @@ describe("the inbox tabs", () => {
     )
     expect(due).toContain("attempts=eq.0")
     expect(ATTENTION_FILTER).toContain("attempts.gt.0")
+  })
+})
+
+describe("the agent filter", () => {
+  const scope = (agent: string | null | undefined): ReminderScope => ({
+    tab: "upcoming",
+    agent,
+    viewTypes: [],
+    nowIso: NOW,
+  })
+  const apply = (agent: string | null | undefined) =>
+    urlOf(applyReminderScope(client.from("reminders").select("id"), scope(agent)))
+
+  it("adds no member predicate at all when showing everyone", () => {
+    // `undefined` must not degrade into a filter. A scope that quietly narrowed
+    // to nobody would render an empty inbox that looks like an empty queue.
+    expect(apply(undefined)).not.toContain("member_id")
+  })
+
+  it("filters to one agent by id", () => {
+    expect(apply("m-1")).toContain("member_id=eq.m-1")
+  })
+
+  it("uses IS NULL for unassigned, not eq", () => {
+    // THE reason `null` is its own case. PostgREST renders `.eq("member_id",
+    // null)` as `member_id=eq.null`, which compares against the STRING "null"
+    // and matches nothing — an "Unassigned" option that always looks empty,
+    // with no error to say why.
+    const url = apply(null)
+    expect(url).toContain("member_id=is.null")
+    expect(url).not.toContain("member_id=eq.")
+  })
+
+  it("keeps the tab predicates alongside the agent one", () => {
+    // The two dimensions are independent and both have to survive; an agent
+    // filter that replaced the tab would show sent rows under Upcoming.
+    const url = apply("m-1")
+    expect(url).toContain("status=eq.queued")
+    expect(url).toContain("member_id=eq.m-1")
   })
 })

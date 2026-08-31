@@ -1,6 +1,7 @@
 "use server"
 
 import { revalidatePath } from "next/cache"
+import { reassignContactReminders } from "@/lib/lifecycle/reassign-reminders"
 import { requireTenant } from "@/lib/tenant"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { normalizePhone, parseCalendarDate, titleCaseName } from "@/lib/sanitize"
@@ -295,6 +296,10 @@ export async function resolveReview(
     .eq("id", leadId)
     .eq("business_id", tenant.businessId)
   if (assignError) return { ok: false, error: assignError.message }
+
+  // Resolving a review assigns an EXISTING contact, which may already have
+  // reminders queued to someone else. Same rule as the contact page.
+  await reassignContactReminders(admin, tenant.businessId, leadId, memberId)
 
   // contact_import_reviews_resolution_coherent requires all three together.
   const { error } = await admin
