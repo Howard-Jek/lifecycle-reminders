@@ -14,7 +14,11 @@
  */
 
 import { packForVertical, type VerticalPack } from "./vertical-packs"
+import { devVerticalOverride } from "@/lib/dev/vertical-switch"
 
 export async function currentPack(vertical: string | null | undefined): Promise<VerticalPack> {
-  return packForVertical(vertical)
+  // The ONE place the local override is consulted, so deleting the switcher at
+  // integration is this line and nothing else. devVerticalOverride returns null
+  // in production without reading anything.
+  return packForVertical((await devVerticalOverride()) ?? vertical)
 }
