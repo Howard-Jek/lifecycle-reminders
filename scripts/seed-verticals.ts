@@ -16,9 +16,9 @@
  *
  * NOTHING SEEDED HERE CAN EVER SEND. Every contact is assigned to a
  * DEACTIVATED team member, and deliverDue filters those out before the claim —
- * their reminders are held, not spent. The script refuses to run against a
- * business that has an active agent, so this stays true if it is pointed
- * somewhere else by mistake.
+ * their reminders are held, not spent. The script refuses to run unless such a
+ * member exists to attribute to, so this stays true if it is pointed somewhere
+ * else by mistake.
  *
  *   npx tsx scripts/seed-verticals.ts --business <uuid>
  *   npx tsx scripts/seed-verticals.ts --business <uuid> --dry
@@ -125,10 +125,19 @@ async function main() {
 
   // ── the safety gate ──────────────────────────────────────────────────────
   //
-  // Demo contacts must never be able to receive a real WhatsApp. deliverDue
-  // holds reminders for deactivated agents, so assigning every contact to one
-  // makes that structural rather than a promise. Refusing to run where an
-  // ACTIVE agent exists keeps it true if this is pointed somewhere else.
+  // Demo contacts must never be able to receive a real WhatsApp, and what
+  // guarantees that is WHO THEY ARE ASSIGNED TO: deliverDue filters reminders
+  // for a deactivated agent out before the claim, so they are held rather than
+  // spent. Assigning every seeded contact to a deactivated member makes this
+  // structural instead of a promise.
+  //
+  // So the gate is "there is a deactivated member to attribute to", NOT "the
+  // business has no active members". The first version refused any business
+  // with an active agent, which was the wrong test twice over: it blocked
+  // seeding a business whose own owner is active even though every demo row
+  // would still have been held, and it would have waved through a business
+  // with no members at all — where an unassigned contact falls back to the
+  // OWNER's real number, which is the one case that actually sends.
   const { data: members, error: memberErr } = await admin
     .from("team_members")
     .select("id, display_name, role, active")
@@ -138,20 +147,26 @@ async function main() {
     process.exit(1)
   }
   const roster = members ?? []
-  const active = roster.filter((m) => m.active)
-  if (active.length > 0) {
+  const holder = roster.find((m) => !m.active)
+  if (!holder) {
     console.error(
-      `[seed-verticals] REFUSING: business ${businessId} has ${active.length} ACTIVE team member(s) ` +
-        `(${active.map((m) => m.display_name).join(", ")}).\n` +
-        `  Demo contacts are only safe on a business whose agents are all deactivated, because that\n` +
-        `  is what holds their reminders instead of sending them. Deactivate them, or pick another business.`,
+      `[seed-verticals] REFUSING: business ${businessId} has no DEACTIVATED team member to ` +
+        `attribute demo contacts to.\n` +
+        `  That assignment is the only thing standing between a demo contact and a real, billed\n` +
+        `  WhatsApp: deliverDue holds reminders for deactivated agents and sends everything else,\n` +
+        `  and an UNASSIGNED contact falls back to the owner's own number.\n` +
+        `  Deactivate a member first, or pick another business.`,
     )
     process.exit(1)
   }
-  const holder = roster[0]
-  if (!holder) {
-    console.error(`[seed-verticals] business ${businessId} has no team members to attribute to.`)
-    process.exit(1)
+  const stillActive = roster.filter((m) => m.active)
+  if (stillActive.length > 0) {
+    console.warn(
+      `[seed-verticals] note: ${stillActive.map((m) => m.display_name).join(", ")} ` +
+        `${stillActive.length === 1 ? "is" : "are"} active on this business. Demo contacts are ` +
+        `assigned to ${holder.display_name} (deactivated), so their reminders are held — but do ` +
+        `not reassign them.`,
+    )
   }
 
   if (args.clean) {
