@@ -133,3 +133,58 @@ describe("bulk sending is scoped to what the tab shows", () => {
     expect(fn).toMatch(/attempts: 0/)
   })
 })
+
+describe("a retry wait never overrides a human", () => {
+  /**
+   * Source-level, for the same reason the gate above is: what matters is WHICH
+   * BRANCH the filter sits in, and that is invisible to a unit test of any
+   * function.
+   *
+   * The regression: `next_attempt_at` was added to the shared query, above the
+   * `if (manual)` split, so a row a person clicked Send on was silently held
+   * back by a backoff timer. The cycle matched nothing, returned zeros, and the
+   * button reported "Nothing was sent" with no reason — for up to seven days.
+   *
+   * due_at and the auto-send gate both live in the automatic branch precisely
+   * because a human looking at a row outranks them. The retry wait is the same
+   * kind of rule and belongs in the same place.
+   */
+  const source = readFileSync(join(process.cwd(), "src/lib/lifecycle/run-cycle.ts"), "utf8")
+
+  const deliverDue = source.slice(source.indexOf("async function deliverDue("))
+  const manualBranch = deliverDue.slice(
+    deliverDue.indexOf("if (manual) {"),
+    deliverDue.indexOf("} else {"),
+  )
+  const automaticBranch = deliverDue.slice(
+    deliverDue.indexOf("} else {"),
+    deliverDue.indexOf("const { data, error } = await query"),
+  )
+
+  it("filters on next_attempt_at in the automatic branch", () => {
+    expect(automaticBranch).toMatch(/next_attempt_at/)
+  })
+
+  it("does not filter on next_attempt_at in the manual branch", () => {
+    expect(manualBranch).not.toMatch(/next_attempt_at/)
+  })
+
+  it("does not filter on next_attempt_at before the branch splits", () => {
+    const beforeSplit = deliverDue.slice(0, deliverDue.indexOf("if (manual) {"))
+    expect(beforeSplit).not.toMatch(/next_attempt_at/)
+  })
+
+  it("clears the schedule when a human requeues a row", () => {
+    // The other half: a row whose wait is not cleared is skipped by the very
+    // next cycle even once the filter is in the right place.
+    const sendActions = readFileSync(
+      join(process.cwd(), "src/app/actions/send-reminders.ts"),
+      "utf8",
+    )
+    const requeue = sendActions.slice(
+      sendActions.indexOf("async function requeue("),
+      sendActions.indexOf(".select(\"id\")", sendActions.indexOf("async function requeue(")),
+    )
+    expect(requeue).toMatch(/next_attempt_at:\s*null/)
+  })
+})

@@ -406,9 +406,6 @@ async function deliverDue(admin: SupabaseClient, options: CycleOptions = {}) {
     )
     .eq("status", "queued")
     .lt("attempts", MAX_ATTEMPTS)
-    // A row that failed and was rescheduled waits its turn. NULL is "eligible
-    // now" — every first attempt, and every row that predates this column.
-    .or(`next_attempt_at.is.null,next_attempt_at.lte.${nowIso}`)
     .order("due_at", { ascending: true })
     .limit(Math.min(options.maxDeliveries ?? MAX_DELIVERIES_PER_RUN, MAX_DELIVERIES_PER_RUN))
 
@@ -419,6 +416,20 @@ async function deliverDue(admin: SupabaseClient, options: CycleOptions = {}) {
     if (ids.length === 0) return { sent: 0, failed: 0, skipped: 0 }
     query = query.in("id", ids)
   } else {
+    /**
+     * A row that failed and was rescheduled waits its turn. NULL is "eligible
+     * now" — every first attempt, and every row that predates this column.
+     *
+     * IN THE AUTOMATIC BRANCH ONLY, beside the due_at filter and for the same
+     * reason. A person clicking Send on a row they are looking at is a better
+     * authority on whether it should go than a backoff timer is, exactly as
+     * they are a better authority than due_at. Left on the shared query this
+     * silently overrode them: the row matched nothing, the cycle returned
+     * zeros, and the button reported "Nothing was sent" with no reason, for as
+     * long as three days.
+     */
+    query = query.or(`next_attempt_at.is.null,next_attempt_at.lte.${nowIso}`)
+
     /**
      * THE GATE. Businesses that have not switched automatic sending on are not
      * queried at all.
