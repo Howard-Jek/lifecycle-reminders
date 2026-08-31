@@ -7,6 +7,7 @@ import { humaniseEventType } from "@/lib/lifecycle/labels"
 import { describeLeadTime } from "@/lib/notify/client-event-reminder"
 import { REMINDER_STATUS_PILL } from "@/lib/types"
 import { cn } from "@/lib/utils"
+import { describeWhatsappError } from "@/lib/whatsapp-errors"
 import { CopyButton } from "@/components/copy-button"
 import { CoverageBanner } from "@/components/coverage-banner"
 import { SetupChecklistSection } from "@/components/onboarding/setup-checklist-section"
@@ -61,6 +62,7 @@ type ReminderRow = {
   status: string
   suggestion: string | null
   error: string | null
+  error_code: string | null
   sent_at: string | null
   member_id: string | null
   event_id: string
@@ -230,7 +232,7 @@ export default async function RemindersPage({
    * nothing for a feature it is not using.
    */
   const LIST_COLUMNS =
-    "id, occurrence_date, due_at, status, suggestion, error, sent_at, member_id, event_id"
+    "id, occurrence_date, due_at, status, suggestion, error, error_code, sent_at, member_id, event_id"
   const withType = (columns: string) =>
     viewTypes.length > 0 ? `${columns}, contact_events!inner(event_type)` : columns
 
@@ -595,15 +597,30 @@ export default async function RemindersPage({
                   )}
 
                   {row.error && (
-                    // break-words because this is Meta's text, not ours, and
-                    // Meta puts URLs in it. #131042 arrives carrying a 190-char
-                    // billing link with no spaces, which has no break
-                    // opportunity and dragged the whole page to 791px wide
-                    // inside a 375px viewport — every row on the tab scrolling
-                    // sideways because of one error string.
-                    <p className="mt-2 rounded-lg bg-destructive/10 px-3 py-2 text-xs break-words text-destructive">
-                      {row.error}
-                    </p>
+                    /* Ours first, Meta's second.
+                       The raw line is kept because it is the only thing worth
+                       pasting into a support ticket, but on its own it asks the
+                       operator to know what "[131047]" means. The sentence above
+                       it says what to actually do; the code below it is the
+                       evidence. */
+                    <div className="mt-2 rounded-lg bg-destructive/10 px-3 py-2 text-destructive">
+                      {(() => {
+                        const info = describeWhatsappError(row.error_code, row.error)
+                        return (
+                          <>
+                            <p className="text-xs font-medium">{info.title}</p>
+                            <p className="mt-1 text-xs leading-relaxed">{info.action}</p>
+                          </>
+                        )
+                      })()}
+                      {/* break-words because this is Meta's text, not ours, and
+                          Meta puts URLs in it. #131042 arrives carrying a
+                          190-char billing link with no spaces, which has no
+                          break opportunity and dragged the whole page to 791px
+                          wide inside a 375px viewport — every row on the tab
+                          scrolling sideways because of one error string. */}
+                      <p className="mt-2 text-[11px] break-words opacity-70">{row.error}</p>
+                    </div>
                   )}
                 </li>
               )
