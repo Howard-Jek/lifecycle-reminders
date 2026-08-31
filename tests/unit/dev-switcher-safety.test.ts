@@ -48,6 +48,25 @@ describe("the dev industry switcher is gated in all three layers", () => {
   })
 })
 
+describe('the "use server" module exports only server actions', () => {
+  it("declares no non-async exports", () => {
+    /**
+     * Next treats every export of a "use server" module as a callable server
+     * action, so a single non-async export makes the WHOLE module resolve to
+     * nothing — "the module has no exports at all". It took the switcher, the
+     * layout and every page importing currentPack down with it.
+     *
+     * Neither tsc nor vitest can see this: both resolve the file normally. It
+     * appears only at `next build`, which is a slow way to find out. The cookie
+     * name lives in vertical-cookie.ts for exactly this reason.
+     */
+    expect(switchModule).toMatch(/^"use server"/)
+    const exports = [...switchModule.matchAll(/^export\s+(?!type\b)(\w+)/gm)].map((m) => m[1])
+    expect(exports.length).toBeGreaterThan(0)
+    expect(exports.every((kw) => kw === "async")).toBe(true)
+  })
+})
+
 describe("the override has exactly one consumer", () => {
   it("is read only by currentPack, so deleting it at integration is one line", () => {
     expect(currentPack).toMatch(/devVerticalOverride\(\)/)

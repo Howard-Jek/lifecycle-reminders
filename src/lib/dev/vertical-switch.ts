@@ -19,8 +19,9 @@
 import { cookies } from "next/headers"
 import { isProductionRuntime } from "@/lib/env"
 import { isVertical, type Vertical } from "@/lib/lifecycle/verticals"
-
-export const DEV_VERTICAL_COOKIE = "lifecycle_dev_vertical"
+// Imported, not declared here: a "use server" module may export only async
+// functions, and one const export voids the entire module. See that file.
+import { DEV_VERTICAL_COOKIE } from "./vertical-cookie"
 
 /**
  * THREE gates, not one, and each closes a different door.
