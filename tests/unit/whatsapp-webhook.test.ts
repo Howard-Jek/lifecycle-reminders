@@ -541,14 +541,18 @@ describe("a delivery failure is written where the row can still be reached", () 
    * gets — went to a log line. Widening it is one word, and losing it again
    * would be one word too.
    */
+  // The receipt handling lives beside the route, not in it: the route is Meta's
+  // plumbing and does not survive a move into the host app, while this does.
+  // See the header of reminder-receipts.ts for the upstream seam it is shaped
+  // for.
   const source = readFileSync(
-    join(process.cwd(), "src/app/api/webhooks/whatsapp/route.ts"),
+    join(process.cwd(), "src/lib/notify/reminder-receipts.ts"),
     "utf8",
   )
 
   const failedSends = source.slice(
-    source.indexOf("async function recordFailedSends("),
-    source.indexOf("async function storeInboundMessages("),
+    source.indexOf("export async function recordFailedSends("),
+    source.indexOf("export async function recordStatusEvents("),
   )
 
   it("re-asserts the overwritable statuses at the update itself", () => {
