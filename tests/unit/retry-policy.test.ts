@@ -92,7 +92,7 @@ describe("personal dates are never retried", () => {
   })
 
   it("retries anything else, including a type this engine has never seen", () => {
-    // isPolicyLike is a NEGATION, so a warranty or a visa renewal is retryable
+    // isHoldingType is a NEGATION, so a warranty or a visa renewal is retryable
     // without anyone adding it to a list.
     expect(plan({ eventType: "visa_renewal" })).toMatchObject({ retry: true })
     expect(plan({ eventType: "policy_review" })).toMatchObject({ retry: true })

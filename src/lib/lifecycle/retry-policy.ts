@@ -20,7 +20,7 @@
  *   is dropped rather than delivered late.
  */
 
-import { isPolicyLike } from "./event-types"
+import { isHoldingType } from "./event-types"
 import { addDays, daysBetween, todayInTimezone } from "./occurrence"
 
 /**
@@ -79,7 +79,7 @@ export function planRetry(input: {
 
   // A null event_type means the event row is gone. deliverOne resolves that to
   // 'skipped' on its own, so this only has to not throw.
-  if (!isPolicyLike(eventType ?? "")) return { retry: false, reason: "not-retryable" }
+  if (!isHoldingType(eventType ?? "")) return { retry: false, reason: "not-retryable" }
 
   const inDays = RETRY_BACKOFF_DAYS[attemptsBurnt - 1]
   if (inDays === undefined) return { retry: false, reason: "attempts-exhausted" }

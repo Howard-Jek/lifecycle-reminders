@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest"
 import {
   packForVertical,
-  isHoldingType,
   holdingLabel,
   GENERIC_PACK,
   type VerticalPack,
 } from "@/lib/lifecycle/vertical-packs"
+import { isHoldingType } from "@/lib/lifecycle/event-types"
 import { VERTICALS } from "@/lib/lifecycle/verticals"
 import { DEFAULT_INSURANCE_RULES } from "@/lib/lifecycle/types"
 import { MAX_OVERDUE_DAYS } from "@/lib/lifecycle/plan-reminders"
@@ -122,15 +122,15 @@ describe("isHoldingType", () => {
     // The one thing the split exists to prevent. A birthday counted as a
     // product date is also a birthday that gets RETRIED days late.
     for (const pack of allPacks()) {
-      expect(isHoldingType(pack, "birthday"), pack.key).toBe(false)
-      expect(isHoldingType(pack, "anniversary"), pack.key).toBe(false)
+      expect(isHoldingType("birthday"), pack.key).toBe(false)
+      expect(isHoldingType("anniversary"), pack.key).toBe(false)
     }
   })
 
   it("counts a type nobody predicted", () => {
     // Free text is the point: a business that invents `visa_expiry` gets it
     // counted without anyone adding it to a list.
-    expect(isHoldingType(GENERIC_PACK, "visa_expiry")).toBe(true)
+    expect(isHoldingType("visa_expiry")).toBe(true)
   })
 })
 
@@ -160,7 +160,7 @@ describe("the deliberate exceptions, pinned so they read as decisions", () => {
     const saas = packForVertical("saas")
     expect(saas.rules.some((r) => r.event_type === "birthday")).toBe(false)
     expect(saas.eventTypes.some((t) => t.slug === "birthday")).toBe(true)
-    expect(isHoldingType(saas, "birthday")).toBe(false)
+    expect(isHoldingType("birthday")).toBe(false)
   })
 
   it("forbids clinical detail in the dental framing", () => {

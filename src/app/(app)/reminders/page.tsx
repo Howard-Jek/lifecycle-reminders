@@ -14,7 +14,9 @@ import { SetupChecklistSection } from "@/components/onboarding/setup-checklist-s
 import { CHECKLIST_COLLAPSED_COOKIE } from "@/lib/onboarding/steps"
 import { WelcomeTour } from "@/components/onboarding/welcome-tour"
 import { CalendarClock, Inbox } from "lucide-react"
-import { isPolicyLike } from "@/lib/lifecycle/event-types"
+import { isHoldingType } from "@/lib/lifecycle/event-types"
+import { currentPack } from "@/lib/lifecycle/current-pack"
+import { holdingLabel } from "@/lib/lifecycle/vertical-packs"
 import { loadEventFacts } from "@/lib/lifecycle/event-facts"
 import { applyReminderScope, type ReminderScope } from "@/lib/lifecycle/reminder-filters"
 import { deriveSendingStatus } from "@/lib/lifecycle/sending-status"
@@ -112,9 +114,15 @@ export default async function RemindersPage({
       loadEventFacts(admin, tenant.businessId),
       admin
         .from("businesses")
-        .select("timezone, auto_send_enabled")
+        // `vertical` rides along on a query that was already happening — it
+        // decides what this inbox CALLS a bucket, nothing more.
+        .select("timezone, auto_send_enabled, vertical")
         .eq("id", tenant.businessId)
-        .maybeSingle<{ timezone: string | null; auto_send_enabled: boolean | null }>(),
+        .maybeSingle<{
+          timezone: string | null
+          auto_send_enabled: boolean | null
+          vertical: string | null
+        }>(),
       admin
         .from("team_members")
         .select("id, display_name, auth_user_id")
@@ -148,12 +156,14 @@ export default async function RemindersPage({
    * Split by BUCKET rather than by exact event_type: an agency runs several
    * policy types, so a filter that picked one of them would still make
    * "everything expiring" a five-click job. The buckets come from this tenant's
-   * own types via isPolicyLike, so the engine keeps knowing nothing about
-   * insurance beyond the single exception that file already documents.
+   * own types via isHoldingType, which is a universal question — is this about
+   * the person, or about something they hold — so the engine still knows
+   * nothing about any industry. Only the WORDS come from the pack.
    */
+  const pack = await currentPack(businessRes.data?.vertical)
   const buckets = {
-    policies: knownTypes.filter((t) => isPolicyLike(t.value)).map((t) => t.value),
-    personal: knownTypes.filter((t) => !isPolicyLike(t.value)).map((t) => t.value),
+    policies: knownTypes.filter((t) => isHoldingType(t.value)).map((t) => t.value),
+    personal: knownTypes.filter((t) => !isHoldingType(t.value)).map((t) => t.value),
   }
   // An empty bucket is never offered and therefore can never be selected. That
   // is what keeps the .in() below from being handed an empty list, and stops a
@@ -167,15 +177,12 @@ export default async function RemindersPage({
   // too, and a bucket labelled "Birthdays" while quietly also hiding
   // anniversaries is the kind of small lie a filter should not tell.
   const personalLabel = buckets.personal.every((t) => t === "birthday") ? "Birthdays" : "Personal"
-  // The same courtesy on the policy side, which was not being extended.
-  // isPolicyLike is a NEGATION — "not a birthday or anniversary" — so this
-  // bucket holds every product date, and a business tracking policy_review
-  // alongside policy_expiry was being told those reviews were "Renewals". A
-  // review is not a renewal. Only claim the narrower word when it is true.
-  const RENEWAL_WORDS = /(expiry|expiration|renewal|renew)/
-  const policiesLabel = buckets.policies.every((t) => RENEWAL_WORDS.test(t))
-    ? "Renewals"
-    : "Policies"
+  // The same courtesy on the holdings side, now spelled in this industry's
+  // words. The RULE is unchanged and moved into the pack: only claim the
+  // narrower term when every type in the bucket earns it, because a review is
+  // not a renewal — and, in a gym, a running-out session package is not a
+  // membership renewal either.
+  const policiesLabel = holdingLabel(pack, buckets.policies)
   const viewLabel =
     view === "personal"
       ? personalLabel

@@ -23,7 +23,6 @@
  */
 
 import type { Recurrence, ReminderRule } from "./types"
-import { PERSONAL_EVENT_TYPES } from "./event-types"
 import type { Vertical } from "./verticals"
 
 /** An event type this industry expects to see, offered before any exist. */
@@ -71,17 +70,6 @@ export type VerticalPack = {
   /** Names the rule set in button and checklist copy: "the {name} rules". */
   name: string
   holding: HoldingLabels
-  /**
-   * Slugs this industry treats as personal, ADDED to PERSONAL_EVENT_TYPES.
-   *
-   * Additive only, and that is load-bearing. The base set is used in a
-   * cross-tenant, business-unscoped query (the personal stuck-claim sweep in
-   * claim-reminder.ts), which cannot consult a per-business pack. Keeping the
-   * base universal keeps that sweep correct. A pack that could REMOVE
-   * `birthday` would let a birthday be counted and retried as a product date,
-   * which is the one thing the personal/holding split exists to prevent.
-   */
-  personalExtra: readonly string[]
   eventTypes: readonly PackEventType[]
   rules: readonly PackRule[]
   /** One clause spliced into the drafting prompt. See suggest-message.ts. */
@@ -129,7 +117,6 @@ const INSURANCE_PACK: VerticalPack = {
     narrow: { label: "Renewals", pattern: /(expiry|expiration|renewal|renew)/ },
     inline: "policy dates",
   },
-  personalExtra: [],
   eventTypes: [
     ...PERSONAL_DATES,
     {
@@ -181,7 +168,6 @@ const GENERIC_PACK: VerticalPack = {
     narrow: null,
     inline: "dates on file",
   },
-  personalExtra: [],
   eventTypes: [
     ...PERSONAL_DATES,
     {
@@ -224,7 +210,6 @@ const FINANCIAL_ADVISORY_PACK: VerticalPack = {
     narrow: { label: "Maturities", pattern: /matur/ },
     inline: "plan dates",
   },
-  personalExtra: [],
   eventTypes: [
     ...PERSONAL_DATES,
     { slug: "review_due", label: "Review due", recurrence: "none", synonyms: [/review/i] },
@@ -262,7 +247,6 @@ const MORTGAGE_PACK: VerticalPack = {
     narrow: { label: "Rate expiries", pattern: /(rate|lock)/ },
     inline: "loan dates",
   },
-  personalExtra: [],
   eventTypes: [
     ...PERSONAL_DATES,
     {
@@ -303,7 +287,6 @@ const REAL_ESTATE_PACK: VerticalPack = {
     narrow: { label: "Renewals", pattern: /(expiry|renewal)/ },
     inline: "lease dates",
   },
-  personalExtra: [],
   eventTypes: [
     ...PERSONAL_DATES,
     { slug: "lease_expiry", label: "Lease expiry", recurrence: "none", synonyms: [/lease|tenanc|expir/i] },
@@ -338,7 +321,6 @@ const DENTAL_PACK: VerticalPack = {
     narrow: { label: "Recalls", pattern: /recall/ },
     inline: "treatment dates",
   },
-  personalExtra: [],
   eventTypes: [
     ...PERSONAL_DATES,
     { slug: "recall_due", label: "Recall due", recurrence: "yearly", synonyms: [/recall|check\s*-?\s*up|hygien/i] },
@@ -376,7 +358,6 @@ const BEAUTY_PACK: VerticalPack = {
     narrow: { label: "Expiries", pattern: /expir/ },
     inline: "package dates",
   },
-  personalExtra: [],
   eventTypes: [
     ...PERSONAL_DATES,
     { slug: "treatment_due", label: "Treatment due", recurrence: "none", synonyms: [/treatment|session|appointment/i] },
@@ -406,7 +387,6 @@ const CONSTRUCTION_PACK: VerticalPack = {
     narrow: null,
     inline: "project dates",
   },
-  personalExtra: [],
   eventTypes: [
     ...PERSONAL_DATES,
     {
@@ -443,7 +423,6 @@ const FITNESS_PACK: VerticalPack = {
     narrow: { label: "Renewals", pattern: /(expiry|renewal)/ },
     inline: "membership dates",
   },
-  personalExtra: [],
   eventTypes: [
     ...PERSONAL_DATES,
     { slug: "membership_expiry", label: "Membership expiry", recurrence: "none", synonyms: [/member|expir|renew/i] },
@@ -472,7 +451,6 @@ const HOME_SERVICES_PACK: VerticalPack = {
     narrow: { label: "Servicing", pattern: /service/ },
     inline: "service dates",
   },
-  personalExtra: [],
   eventTypes: [
     ...PERSONAL_DATES,
     // Yearly by default: servicing is the recurring case, unlike most holdings.
@@ -501,7 +479,6 @@ const SAAS_PACK: VerticalPack = {
     narrow: { label: "Renewals", pattern: /renew/ },
     inline: "subscription dates",
   },
-  personalExtra: [],
   eventTypes: [
     // The dates are still offered — a B2B contact has a birthday, and an
     // account manager may well want it on file.
@@ -541,7 +518,6 @@ const TRAINING_PACK: VerticalPack = {
     narrow: { label: "Expiries", pattern: /expir/ },
     inline: "course dates",
   },
-  personalExtra: [],
   eventTypes: [
     ...PERSONAL_DATES,
     { slug: "course_end", label: "Course ends", recurrence: "none", synonyms: [/course|intake|cohort|programme|program/i] },
@@ -609,17 +585,6 @@ const PACKS: Partial<Record<Vertical, VerticalPack>> = {
 export function packForVertical(vertical: string | null | undefined): VerticalPack {
   if (!vertical) return GENERIC_PACK
   return PACKS[vertical as Vertical] ?? GENERIC_PACK
-}
-
-/**
- * Does this event type count as something the contact HOLDS?
- *
- * The replacement for isPolicyLike, and the same shape of answer: a negation.
- * Everything is a holding unless it is personal, so a business that invents
- * `visa_expiry` gets it counted without anybody adding it to a list.
- */
-export function isHoldingType(pack: VerticalPack, eventType: string): boolean {
-  return !PERSONAL_EVENT_TYPES.has(eventType) && !pack.personalExtra.includes(eventType)
 }
 
 /**

@@ -63,16 +63,36 @@ export async function listKnownEventTypes(
 }
 
 /**
- * The one event type the UI treats specially.
+ * Dates that are about the PERSON rather than about anything they hold.
  *
- * Contacts counts POLICIES rather than dates, and a birthday is not a policy —
- * it is about the person, not a product they hold. Naming it here rather than
- * inlining the string keeps that exception in one place and visible: it is the
- * single point where this vertical-agnostic engine admits to knowing what an
- * insurance agency means by "how many do they have".
+ * The split is universal and stays here rather than in a vertical pack. A
+ * birthday is a birthday in an insurance agency, a dental practice and a gym,
+ * and two things depend on that being true everywhere:
+ *
+ *   - the personal stuck-claim sweep in claim-reminder.ts runs UNSCOPED across
+ *     every business, so it has no pack to consult;
+ *   - "personal dates are never retried late" is a promise the retry policy
+ *     makes without knowing whose row it is holding.
+ *
+ * A per-vertical override would break both quietly — a date could be personal
+ * on one screen and retryable on another — so if one is ever wanted, the pack
+ * has to be threaded into planRetry and that sweep first.
+ *
+ * What IS per-vertical is the wording. An insurance agency counts policies and
+ * a gym counts memberships; both mean "things this person holds". Those words
+ * live in vertical-packs.ts, and this function answers only the question they
+ * disagree about the name of.
  */
 export const PERSONAL_EVENT_TYPES = new Set(["birthday", "anniversary"])
 
-export function isPolicyLike(eventType: string): boolean {
+/**
+ * Does this event type count as something the contact HOLDS?
+ *
+ * A negation on purpose — everything is a holding unless it is personal — so a
+ * business that invents `visa_expiry` or `defects_liability_end` gets it
+ * counted without anyone adding it to a list. That is the same reason
+ * `event_type` is free text in the schema.
+ */
+export function isHoldingType(eventType: string): boolean {
   return !PERSONAL_EVENT_TYPES.has(eventType)
 }
