@@ -22,7 +22,14 @@ import {
  * resolve any ambiguous date format, then commit. Nothing is written until the
  * last step, and the operator has seen the interpretation before it happens.
  */
-export function ImportClient({ defaultCountry }: { defaultCountry: string }) {
+export function ImportClient({
+  defaultCountry,
+  importHint,
+}: {
+  defaultCountry: string
+  /** The kind of dates this industry keeps, from its reminder pack. */
+  importHint: string
+}) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -184,7 +191,7 @@ export function ImportClient({ defaultCountry }: { defaultCountry: string }) {
             {eventColumns.length === 0 ? (
               <p className="mt-4 rounded-lg border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
                 No date columns detected. Add them by hand on a contact afterwards, or rename the
-                column to something like &ldquo;Policy expiry&rdquo; and re-read the file.
+                column and re-read the file. {importHint}
               </p>
             ) : (
               <div className="mt-5 space-y-4">

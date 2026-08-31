@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { claimReminder } from "@/lib/lifecycle/claim-reminder"
+import { claimReminder, markReminderSent } from "@/lib/lifecycle/claim-reminder"
 import { buildIcsFeed, escapeIcsText, foldIcsLine } from "@/lib/lifecycle/ics"
 import { todayInTimezone, daysBetween } from "@/lib/lifecycle/occurrence"
 import { describeLeadTime, buildReminderComponents } from "@/lib/notify/client-event-reminder"
@@ -53,6 +53,63 @@ describe("claimReminder", () => {
     const { admin, calls } = stubClaim({ id: "r1" })
     await claimReminder(admin, "r1", 2)
     expect(calls[0]).toMatchObject({ attempts: 3 })
+  })
+})
+
+// ── mark sent ───────────────────────────────────────────────────────────────
+// The other half of the at-most-once story, and the half the webhook depends
+// on: a delivery receipt can mark a row `failed` in the window between
+// stampDelivered() and this write. Without a status predicate this update
+// would flip that `failed` straight back to `sent`, and the failure — the only
+// explanation the operator will ever get — would be erased by a later write
+// that knows nothing about it.
+
+function stubMarkSent(row: { id: string } | null, error: { message: string } | null = null) {
+  const calls: Record<string, unknown>[] = []
+  const eqs: Array<[string, unknown]> = []
+  const chain = {
+    update(patch: Record<string, unknown>) {
+      calls.push(patch)
+      return this
+    },
+    eq(col: string, val: unknown) {
+      eqs.push([col, val])
+      return this
+    },
+    select() {
+      return this
+    },
+    maybeSingle: () => Promise.resolve({ data: row, error }),
+  }
+  const admin = { from: () => chain } as unknown as SupabaseClient
+  return { admin, calls, eqs }
+}
+
+describe("markReminderSent", () => {
+  it("records the send, scoped to the row this run still holds", async () => {
+    const { admin, calls, eqs } = stubMarkSent({ id: "r1" })
+    expect(await markReminderSent(admin, "r1", "wamid.1", "hi")).toBe("recorded")
+    expect(calls[0]).toMatchObject({
+      status: "sent",
+      whatsapp_message_id: "wamid.1",
+      suggestion: "hi",
+      error: null,
+    })
+    // The predicate is the whole point: without it this write clobbers a
+    // `failed` the webhook set while the send was in flight.
+    expect(eqs).toContainEqual(["status", "claimed"])
+  })
+
+  it("reports superseded when the row is no longer claimed", async () => {
+    // Exactly the race: Meta's failure receipt beat this write, the webhook
+    // set `failed`, and this update must now match nothing and say so.
+    const { admin } = stubMarkSent(null)
+    expect(await markReminderSent(admin, "r1", "wamid.1", "hi")).toBe("superseded")
+  })
+
+  it("distinguishes a database error from a superseded row", async () => {
+    const { admin } = stubMarkSent(null, { message: "boom" })
+    expect(await markReminderSent(admin, "r1", "wamid.1", "hi")).toBe("error")
   })
 })
 
@@ -165,6 +222,7 @@ describe("buildSuggestionPrompt", () => {
       leadContext: { plan: "Enhanced" },
       agentName: "Jasmine",
       guardrails: NO_GUARDRAILS,
+      industryFraming: "",
     })
     expect(p).toContain("Goh Jia Hui")
     expect(p).toContain("policy_expiry")
@@ -182,6 +240,7 @@ describe("buildSuggestionPrompt", () => {
       leadContext: {},
       agentName: null,
       guardrails: NO_GUARDRAILS,
+      industryFraming: "",
     })
     expect(p).not.toContain("<script>")
     expect(p).toContain("&lt;script&gt;")
@@ -197,6 +256,7 @@ describe("buildSuggestionPrompt", () => {
       leadContext: {},
       agentName: null,
       guardrails: NO_GUARDRAILS,
+      industryFraming: "",
     })
     expect(p).not.toContain("[object Object]")
     expect(p).toContain("keep")
@@ -351,7 +411,13 @@ function stubUpdateCapture(rows: Array<{ id: string }> | null = []) {
       lt: (c: string, v: unknown) => (filters.push(["lt:" + c, v]), chain),
       gte: (c: string, v: unknown) => (filters.push(["gte:" + c, v]), chain),
       is: (c: string, v: unknown) => (filters.push(["is:" + c, v]), chain),
-      select: () => Promise.resolve({ data: rows, error: null }),
+      in: (c: string, v: unknown) => (filters.push(["in:" + c, v]), chain),
+      not: (c: string, op: string, v: unknown) => (filters.push([`not:${c}:${op}`, v]), chain),
+      // Returns the chain rather than resolving, because the sweep now READS
+      // before it writes: it selects the stuck personal-date rows to resolve
+      // them separately. The chain is thenable, so a terminal `.select("id")`
+      // still awaits to the same value it always did.
+      select: () => chain,
       then: (r: (v: { data: unknown; error: null }) => unknown) =>
         r({ data: rows, error: null }),
     }
@@ -389,6 +455,22 @@ describe("requeueStuckClaims (F3 regression)", () => {
     // the same zombie, reached by a different door.
     expect(requeue!.filters).toContainEqual(["lt:attempts", 3])
     expect(requeue!.filters).toContainEqual(["is:whatsapp_message_id", null])
+  })
+
+  it("resolves an interrupted personal date instead of requeueing it", async () => {
+    // planRetry refuses to reschedule a birthday, but that only governs the
+    // FAILURE path. This sweep requeued any stuck row on the attempts cap
+    // alone, so a birthday whose worker died was redelivered on the next tick —
+    // and after an outage, days late. "BIRTHDAYS DO NOT RETRY" was a promise
+    // the one path that never consulted the policy quietly broke.
+    const { admin, updates } = stubUpdateCapture([{ id: "r1" }])
+    const { requeueStuckClaims } = await import("@/lib/lifecycle/claim-reminder")
+    await requeueStuckClaims(admin, 30, 4)
+
+    const personal = updates.find((u) => u.filters.some(([k]) => k === "in:id"))
+    expect(personal, "interrupted personal dates should be resolved by id").toBeTruthy()
+    expect(personal!.patch.status).toBe("failed")
+    expect(personal!.patch.error).toMatch(/not sent late/i)
   })
 
   it("gives exhausted stuck rows a terminal failed state instead", async () => {

@@ -10,4 +10,17 @@
  */
 export type SendResult =
   | { ok: true; whatsappMessageId: string }
-  | { ok: false; error: string; statusCode: number | null }
+  | {
+      ok: false
+      error: string
+      statusCode: number | null
+      /**
+       * Meta's own error code, kept apart from the message.
+       *
+       * It decides whether the failure may be retried, and the message is not a
+       * reliable way back to it: Meta spells the same code "(#131047) …" in a
+       * Graph response and "[131047] …" in a delivery receipt, and reserves the
+       * right to reword either.
+       */
+      code: string | null
+    }

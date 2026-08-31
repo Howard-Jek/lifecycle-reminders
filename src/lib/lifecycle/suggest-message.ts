@@ -34,9 +34,8 @@ const suggestionSchema = z.object({
 const SYSTEM_PROMPT = `
 <role>
 You draft a short WhatsApp message for a human agent to send to their own client
-about an upcoming date — a birthday, a policy expiry, a review. The agent reads
-your draft, edits it if they want, and sends it themselves. You are never
-talking to the client directly.
+about an upcoming date. The agent reads your draft, edits it if they want, and
+sends it themselves. You are never talking to the client directly.
 </role>
 
 <rules>
@@ -49,9 +48,9 @@ talking to the client directly.
   <rule>Under 60 words. WhatsApp style — warm, plain, human. Not an email, no "Dear".</rule>
   <rule>One message. No subject line, no sign-off block, no placeholders like [name].</rule>
   <rule>Reference the specific event naturally. A birthday is a greeting, NOT a sales pitch — do not attach an offer to it.</rule>
-  <rule>NEVER invent a figure, date, policy number, product name or entitlement that is not given to you. If a detail would help but you do not have it, write around it.</rule>
+  <rule>NEVER invent a figure, date, reference number, product name or entitlement that is not given to you. If a detail would help but you do not have it, write around it.</rule>
   <rule>Do not promise outcomes, returns, approval, or pricing.</rule>
-  <rule>For an expiry or review, the goal is to open a conversation — offer to talk it through, do not try to close.</rule>
+  <rule>When the date is about something the client HOLDS — an expiry, a renewal, a review — the goal is to open a conversation. Offer to talk it through; do not try to close.</rule>
   <rule>Output the message text only.</rule>
 </rules>
 `.trim()
@@ -69,6 +68,16 @@ export type SuggestionInput = {
   eventPayload: Record<string, unknown>
   /** Extra CSV columns carried on the lead, same convention as the reply prompt. */
   leadContext: Record<string, unknown>
+  /**
+   * One clause describing this operator's industry, from their reminder pack.
+   *
+   * Spliced in rather than baked into SYSTEM_PROMPT because the prompt has to
+   * be true for a dentist and a mortgage broker at once, and "a policy expiry"
+   * is not. It is also where a vertical states a PROHIBITION — dental forbids
+   * naming a procedure, because event payloads come from the operator's own
+   * spreadsheet and may well contain one.
+   */
+  industryFraming: string
   /** The agent's display name, so the draft can sound like them. */
   agentName: string | null
   guardrails: Guardrails
@@ -86,6 +95,17 @@ function renderFacts(label: string, obj: Record<string, unknown>): string {
     .map(([k, v]) => `  <fact key="${escapeXml(k)}">${escapeXml(String(v))}</fact>`)
     .join("\n")
   return `<${label}>\n${rows}\n</${label}>`
+}
+
+/**
+ * The operator's industry, as its own block.
+ *
+ * A block rather than an interpolation into <rules>, so a pack that carries a
+ * prohibition cannot be read as one item in a list of stylistic preferences.
+ */
+export function buildIndustryBlock(framing: string): string {
+  const text = framing.trim()
+  return text ? `<industry>\n${text}\n</industry>` : ""
 }
 
 export function buildSuggestionPrompt(input: SuggestionInput): string {
@@ -124,7 +144,7 @@ export function fallbackSuggestion(eventType: string): string {
  * reminder with the fallback line. Never throws.
  */
 export async function draftSuggestion(input: SuggestionInput): Promise<string | null> {
-  const system = [SYSTEM_PROMPT, buildGuardrailsBlock(input.guardrails)]
+  const system = [SYSTEM_PROMPT, buildIndustryBlock(input.industryFraming), buildGuardrailsBlock(input.guardrails)]
     .filter(Boolean)
     .join("\n\n")
   const args = { schema: suggestionSchema, system, prompt: buildSuggestionPrompt(input) }

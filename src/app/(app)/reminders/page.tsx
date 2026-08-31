@@ -7,13 +7,17 @@ import { humaniseEventType } from "@/lib/lifecycle/labels"
 import { describeLeadTime } from "@/lib/notify/client-event-reminder"
 import { REMINDER_STATUS_PILL } from "@/lib/types"
 import { cn } from "@/lib/utils"
+import { describeWhatsappError } from "@/lib/whatsapp-errors"
 import { CopyButton } from "@/components/copy-button"
 import { CoverageBanner } from "@/components/coverage-banner"
 import { SetupChecklistSection } from "@/components/onboarding/setup-checklist-section"
 import { CHECKLIST_COLLAPSED_COOKIE } from "@/lib/onboarding/steps"
 import { WelcomeTour } from "@/components/onboarding/welcome-tour"
 import { CalendarClock, Inbox } from "lucide-react"
-import { isPolicyLike } from "@/lib/lifecycle/event-types"
+import { isHoldingType } from "@/lib/lifecycle/event-types"
+import { currentPack } from "@/lib/lifecycle/current-pack"
+import { devVerticalScope } from "@/lib/dev/vertical-scope"
+import { holdingLabel } from "@/lib/lifecycle/vertical-packs"
 import { loadEventFacts } from "@/lib/lifecycle/event-facts"
 import { applyReminderScope, type ReminderScope } from "@/lib/lifecycle/reminder-filters"
 import { deriveSendingStatus } from "@/lib/lifecycle/sending-status"
@@ -61,6 +65,7 @@ type ReminderRow = {
   status: string
   suggestion: string | null
   error: string | null
+  error_code: string | null
   sent_at: string | null
   member_id: string | null
   event_id: string
@@ -110,9 +115,15 @@ export default async function RemindersPage({
       loadEventFacts(admin, tenant.businessId),
       admin
         .from("businesses")
-        .select("timezone, auto_send_enabled")
+        // `vertical` rides along on a query that was already happening — it
+        // decides what this inbox CALLS a bucket, nothing more.
+        .select("timezone, auto_send_enabled, vertical")
         .eq("id", tenant.businessId)
-        .maybeSingle<{ timezone: string | null; auto_send_enabled: boolean | null }>(),
+        .maybeSingle<{
+          timezone: string | null
+          auto_send_enabled: boolean | null
+          vertical: string | null
+        }>(),
       admin
         .from("team_members")
         .select("id, display_name, auth_user_id")
@@ -146,12 +157,14 @@ export default async function RemindersPage({
    * Split by BUCKET rather than by exact event_type: an agency runs several
    * policy types, so a filter that picked one of them would still make
    * "everything expiring" a five-click job. The buckets come from this tenant's
-   * own types via isPolicyLike, so the engine keeps knowing nothing about
-   * insurance beyond the single exception that file already documents.
+   * own types via isHoldingType, which is a universal question — is this about
+   * the person, or about something they hold — so the engine still knows
+   * nothing about any industry. Only the WORDS come from the pack.
    */
+  const pack = await currentPack(businessRes.data?.vertical)
   const buckets = {
-    policies: knownTypes.filter((t) => isPolicyLike(t.value)).map((t) => t.value),
-    personal: knownTypes.filter((t) => !isPolicyLike(t.value)).map((t) => t.value),
+    policies: knownTypes.filter((t) => isHoldingType(t.value)).map((t) => t.value),
+    personal: knownTypes.filter((t) => !isHoldingType(t.value)).map((t) => t.value),
   }
   // An empty bucket is never offered and therefore can never be selected. That
   // is what keeps the .in() below from being handed an empty list, and stops a
@@ -165,15 +178,12 @@ export default async function RemindersPage({
   // too, and a bucket labelled "Birthdays" while quietly also hiding
   // anniversaries is the kind of small lie a filter should not tell.
   const personalLabel = buckets.personal.every((t) => t === "birthday") ? "Birthdays" : "Personal"
-  // The same courtesy on the policy side, which was not being extended.
-  // isPolicyLike is a NEGATION — "not a birthday or anniversary" — so this
-  // bucket holds every product date, and a business tracking policy_review
-  // alongside policy_expiry was being told those reviews were "Renewals". A
-  // review is not a renewal. Only claim the narrower word when it is true.
-  const RENEWAL_WORDS = /(expiry|expiration|renewal|renew)/
-  const policiesLabel = buckets.policies.every((t) => RENEWAL_WORDS.test(t))
-    ? "Renewals"
-    : "Policies"
+  // The same courtesy on the holdings side, now spelled in this industry's
+  // words. The RULE is unchanged and moved into the pack: only claim the
+  // narrower term when every type in the bucket earns it, because a review is
+  // not a renewal — and, in a gym, a running-out session package is not a
+  // membership renewal either.
+  const policiesLabel = holdingLabel(pack, buckets.policies)
   const viewLabel =
     view === "personal"
       ? personalLabel
@@ -230,7 +240,7 @@ export default async function RemindersPage({
    * nothing for a feature it is not using.
    */
   const LIST_COLUMNS =
-    "id, occurrence_date, due_at, status, suggestion, error, sent_at, member_id, event_id"
+    "id, occurrence_date, due_at, status, suggestion, error, error_code, sent_at, member_id, event_id"
   const withType = (columns: string) =>
     viewTypes.length > 0 ? `${columns}, contact_events!inner(event_type)` : columns
 
@@ -240,6 +250,11 @@ export default async function RemindersPage({
     .eq("business_id", tenant.businessId)
     .limit(PAGE_SIZE)
   if (viewTypes.length > 0) query = query.in("contact_events.event_type", viewTypes)
+  // Dev-only. Narrowed to the previewed industry's demo contacts, so switching
+  // to fitness stops showing somebody's policy renewals. Null in production and
+  // with no override, and null means no filter at all.
+  const scope = await devVerticalScope(admin, tenant.businessId)
+  if (scope) query = query.in("event_id", scope.eventIds)
 
   /**
    * Every link on this page keeps the scope you are already in.
@@ -281,10 +296,13 @@ export default async function RemindersPage({
   // How many are behind each tab, so "Needs attention" can say so without
   // being opened. `head: true` — these are counts, no rows cross the wire.
   const countFor = (id: TabId) => {
-    const q = admin
+    let q = admin
       .from("reminders")
       .select(withType("id"), { count: "exact", head: true })
       .eq("business_id", tenant.businessId)
+    // The SAME dev narrowing as the list. A tab reading "Upcoming 1085" above
+    // ten rows would be a worse lie than either number alone.
+    if (scope) q = q.in("event_id", scope.eventIds)
     return applyReminderScope(q, scopeFor(id))
   }
 
@@ -595,15 +613,47 @@ export default async function RemindersPage({
                   )}
 
                   {row.error && (
-                    // break-words because this is Meta's text, not ours, and
-                    // Meta puts URLs in it. #131042 arrives carrying a 190-char
-                    // billing link with no spaces, which has no break
-                    // opportunity and dragged the whole page to 791px wide
-                    // inside a 375px viewport — every row on the tab scrolling
-                    // sideways because of one error string.
-                    <p className="mt-2 rounded-lg bg-destructive/10 px-3 py-2 text-xs break-words text-destructive">
-                      {row.error}
-                    </p>
+                    /* Ours first, Meta's second.
+                       The raw line is kept because it is the only thing worth
+                       pasting into a support ticket, but on its own it asks the
+                       operator to know what "[131047]" means. The sentence above
+                       it says what to actually do; the code below it is the
+                       evidence. */
+                    <div className="mt-2 rounded-lg bg-destructive/10 px-3 py-2 text-destructive">
+                      {(() => {
+                        // Only when a code was actually recognised. This tab
+                        // also holds failures that never reached WhatsApp — a
+                        // deleted contact, no recipient number, an interrupted
+                        // birthday — and telling somebody to go and check a
+                        // phone number that is perfectly fine is worse than
+                        // showing them the raw line and letting them read it.
+                        const info = describeWhatsappError(row.error_code, row.error)
+                        if (!info.matched) return null
+                        return (
+                          <>
+                            <p className="text-xs font-medium">{info.title}</p>
+                            <p className="mt-1 text-xs leading-relaxed">{info.action}</p>
+                          </>
+                        )
+                      })()}
+                      {/* break-words because this is Meta's text, not ours, and
+                          Meta puts URLs in it. #131042 arrives carrying a
+                          190-char billing link with no spaces, which has no
+                          break opportunity and dragged the whole page to 791px
+                          wide inside a 375px viewport — every row on the tab
+                          scrolling sideways because of one error string. */}
+                      <p
+                        className={cn(
+                          "text-xs break-words",
+                          // Dimmed only when there is guidance above it to be
+                          // secondary TO. On its own it is the whole message.
+                          describeWhatsappError(row.error_code, row.error).matched &&
+                            "mt-2 text-[11px] opacity-70",
+                        )}
+                      >
+                        {row.error}
+                      </p>
+                    </div>
                   )}
                 </li>
               )

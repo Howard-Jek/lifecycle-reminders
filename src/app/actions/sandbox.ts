@@ -189,7 +189,11 @@ export async function requeueAllReminders(): Promise<ActionResult<number>> {
       error: null,
     })
     .eq("business_id", tenant.businessId)
-    .in("status", ["sent", "failed", "skipped", "claimed"])
+    // NOT 'claimed'. A row a worker is mid-send on would be requeued under it,
+    // and the agent gets a second copy of a message already on their handset —
+    // the same hazard requeue() in send-reminders.ts guards against, which this
+    // sibling was missing.
+    .in("status", ["sent", "failed", "skipped"])
     .select("id")
 
   if (error) return { ok: false, error: error.message }

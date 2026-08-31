@@ -10,6 +10,7 @@
  *
  *   npx tsx scripts/seed-demo.ts --email you@example.com
  *   npx tsx scripts/seed-demo.ts --email you@example.com --dry
+ *   npx tsx scripts/seed-demo.ts --email you@example.com --vertical dental
  */
 
 import { readFileSync } from "node:fs"
@@ -30,7 +31,8 @@ try {
   console.warn(`[seed-demo] could not read ${envFile} — relying on the ambient environment`)
 }
 
-const USAGE = "Usage: npx tsx scripts/seed-demo.ts --email <operator email> [--dry]"
+const USAGE =
+  "Usage: npx tsx scripts/seed-demo.ts --email <operator email> [--vertical <industry>] [--dry]"
 
 const FIXTURE = "tests/fixtures/sample-clients.csv"
 
@@ -76,15 +78,23 @@ const DEMO_TEAM: ReadonlyArray<{
   },
 ]
 
-type Args = { email: string | null; dry: boolean; unknown: string[] }
+type Args = {
+  email: string | null
+  dry: boolean
+  /** Override the business's own industry, for looking at a pack locally. */
+  vertical: string | null
+  unknown: string[]
+}
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { email: null, dry: false, unknown: [] }
+  const args: Args = { email: null, dry: false, vertical: null, unknown: [] }
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     if (arg === "--dry") args.dry = true
     else if (arg === "--email") args.email = argv[++i] ?? null
     else if (arg.startsWith("--email=")) args.email = arg.slice("--email=".length)
+    else if (arg === "--vertical") args.vertical = argv[++i] ?? null
+    else if (arg.startsWith("--vertical=")) args.vertical = arg.slice("--vertical=".length)
     else args.unknown.push(arg)
   }
   return args
@@ -218,7 +228,29 @@ async function main() {
 
   // Imported after the env loader has run, exactly as scripts/tick.ts does:
   // anything under src/ is free to read process.env at module scope.
-  const { DEFAULT_INSURANCE_RULES } = await import("../src/lib/lifecycle/types")
+  const { packForVertical } = await import("../src/lib/lifecycle/vertical-packs")
+  const { isVertical } = await import("../src/lib/lifecycle/verticals")
+
+  /**
+   * Which industry's starter rules to seed.
+   *
+   * --vertical overrides the business's own column, which is what makes this
+   * script the way to look at a pack locally: seed dental, look at the inbox,
+   * seed fitness, look again. Without the flag it follows the business, exactly
+   * as the in-app button does.
+   */
+  const requested = args.vertical
+  if (requested && !isVertical(requested)) {
+    console.error(`[seed-demo] "${requested}" is not an industry this app knows.`)
+    process.exit(1)
+  }
+  const { data: businessRow } = await admin
+    .from("businesses")
+    .select("vertical")
+    .eq("id", businessId)
+    .maybeSingle()
+  const pack = packForVertical(requested ?? (businessRow?.vertical as string | null))
+  console.log(`[seed-demo] seeding the ${pack.name} rules.`)
   const { normalizeName } = await import("../src/lib/lifecycle/match-member")
 
   const numbers = new Set(existing.map((member) => member.whatsapp_number))
@@ -245,7 +277,7 @@ async function main() {
 
   const memberRows = toSeed.map((member) => ({ business_id: businessId, ...member }))
   // `label` is operator-facing copy on the constant, not a column.
-  const ruleRows = DEFAULT_INSURANCE_RULES.map((rule) => ({
+  const ruleRows = pack.rules.map((rule) => ({
     business_id: businessId,
     event_type: rule.event_type,
     offset_days: rule.offset_days,
@@ -262,7 +294,7 @@ async function main() {
     for (const conflict of conflicts) console.log(`  skip   ${conflict}`)
     console.log(`\nReminder rules: ${ruleRows.length} would be offered, and any that already exist`)
     console.log("would be left exactly as they are.")
-    for (const rule of DEFAULT_INSURANCE_RULES) {
+    for (const rule of pack.rules) {
       console.log(`  ${rule.label} (${rule.event_type}, ${rule.offset_days}d, ${rule.send_window})`)
     }
     console.log("\nRun the same command without --dry to write it.")

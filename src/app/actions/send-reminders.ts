@@ -66,6 +66,10 @@ async function requeue(
       attempts: 0,
       whatsapp_message_id: null,
       error: null,
+      // Cleared with the rest of the failure it belonged to. Leaving a
+      // scheduled retry on a row a human has just asked to send again means
+      // the next cycle skips it and the button says nothing was sent.
+      next_attempt_at: null,
     })
     .in("id", ids)
     .eq("business_id", businessId)

@@ -2,6 +2,7 @@ import Link from "next/link"
 import { requireTenant } from "@/lib/tenant"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { ImportClient } from "./import-client"
+import { packForVertical } from "@/lib/lifecycle/vertical-packs"
 import { formatDate } from "@/lib/format-time"
 
 export const metadata = { title: "Import" }
@@ -15,9 +16,13 @@ export default async function ImportPage() {
   const [{ data: business }, { data: history }] = await Promise.all([
     admin
       .from("businesses")
-      .select("country_code, timezone")
+      .select("country_code, timezone, vertical")
       .eq("id", tenant.businessId)
-      .maybeSingle<{ country_code: string | null; timezone: string | null }>(),
+      .maybeSingle<{
+        country_code: string | null
+        timezone: string | null
+        vertical: string | null
+      }>(),
     admin
       .from("contact_imports")
       .select("id, source, file_name, status, total_rows, created_rows, updated_rows, events_created, review_rows, created_at")
@@ -25,6 +30,10 @@ export default async function ImportPage() {
       .order("created_at", { ascending: false })
       .limit(10),
   ])
+
+  // Names the kinds of date this industry keeps, so the empty state suggests a
+  // column head the operator might actually have.
+  const pack = packForVertical(business?.vertical)
 
   const dialCodes: Record<string, string> = {
     SG: "+65", MY: "+60", US: "+1", GB: "+44", AU: "+61",
@@ -45,7 +54,7 @@ export default async function ImportPage() {
         </p>
       </div>
 
-      <ImportClient defaultCountry={defaultCountry} />
+      <ImportClient defaultCountry={defaultCountry} importHint={pack.importHint} />
 
       {(history ?? []).length > 0 && (
         <section className="rounded-xl border bg-card p-6 shadow-sm ring-1 ring-foreground/5">

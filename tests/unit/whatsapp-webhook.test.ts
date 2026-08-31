@@ -157,6 +157,9 @@ describe("parseWebhookBatch", () => {
         wamid: "wamid.ABC",
         status: "failed",
         error: "[131047] 24h window",
+        // Beside the prose, not parsed back out of it: the retry decision reads
+        // the code, and the "[131047]" prefix is a presentation choice.
+        errorCode: "131047",
         recipient: null,
         occurredAt: null,
       },
@@ -510,6 +513,7 @@ describe("statuses carry who and when, so a receipt can be recorded", () => {
       wamid: "wamid.Q",
       status: "delivered",
       error: null,
+      errorCode: null,
       recipient: "6581115611",
       occurredAt: "2025-08-19T10:40:00.000Z",
     })
@@ -521,5 +525,143 @@ describe("statuses carry who and when, so a receipt can be recorded", () => {
       entry: [{ changes: [{ field: "messages", value: { statuses: [{ id: "w", status: "read" }] } }] }],
     })
     expect(batch.statuses[0]).toMatchObject({ recipient: null, occurredAt: null })
+  })
+})
+
+describe("a delivery failure is written where the row can still be reached", () => {
+  /**
+   * Source-level, in the style of sandbox-safety.test.ts, because what is under
+   * test is WHERE the predicate sits rather than what a function returns.
+   *
+   * The defect this pins was a scoping mistake with no visible symptom: the
+   * update was scoped to `status = 'sent'` alone, so a failure receipt landing
+   * in the window before markReminderSent() committed matched nothing at all.
+   * The row was requeued by the stuck-claim sweep and retried against a number
+   * Meta had already refused, and the reason — the only explanation anyone ever
+   * gets — went to a log line. Widening it is one word, and losing it again
+   * would be one word too.
+   */
+  // The receipt handling lives beside the route, not in it: the route is Meta's
+  // plumbing and does not survive a move into the host app, while this does.
+  // See the header of reminder-receipts.ts for the upstream seam it is shaped
+  // for.
+  const source = readFileSync(
+    join(process.cwd(), "src/lib/notify/reminder-receipts.ts"),
+    "utf8",
+  )
+
+  const failedSends = source.slice(
+    source.indexOf("export async function recordFailedSends("),
+    source.indexOf("export async function recordStatusEvents("),
+  )
+
+  it("re-asserts the overwritable statuses at the update itself", () => {
+    // Not merely in the verdict: the row can move between the read and the
+    // write, and the predicate is what makes the later writer win.
+    expect(failedSends).toMatch(/\.in\("status", RESOLVABLE_FROM_RECEIPT\)/)
+  })
+
+  it("does not narrow the update to `sent` alone", () => {
+    expect(failedSends).not.toMatch(/\.eq\("status",\s*"sent"\)/)
+  })
+
+  it("delegates the decision rather than branching inline", () => {
+    expect(failedSends).toMatch(/resolveFailedReceipt\(/)
+  })
+
+  it("clears the wamid when it sends a row back to the queue", () => {
+    // requeueStuckClaims only rescues a stuck row whose wamid is NULL — it
+    // reads a wamid as "the send succeeded, only the bookkeeping failed".
+    // Leaving the old id on a requeued row makes it unrescuable if the next
+    // attempt dies mid-flight, which is a permanent stall with no symptom.
+    expect(failedSends).toMatch(/whatsapp_message_id:\s*null/)
+  })
+
+  it("resolves wamid ownership exactly once for the whole payload", () => {
+    // Two lookups can disagree, and a receipt logged against a reminder it was
+    // not applied to is worse than no record at all.
+    const reminderReads = source.match(/\.from\("reminders"\)\s*\n\s*\.select\(/g) ?? []
+    expect(reminderReads).toHaveLength(1)
+  })
+})
+
+describe("the failure code survives as a value, not only as prose", () => {
+  const failure = (errors: unknown[]) =>
+    parseWebhookBatch({
+      object: "whatsapp_business_account",
+      entry: [
+        {
+          changes: [
+            { field: "messages", value: { statuses: [{ id: "w.1", status: "failed", errors }] } },
+          ],
+        },
+      ],
+    }).statuses[0]
+
+  it("reads the code from errors[], not from the flattened string", () => {
+    // Meta sends it as a number; every consumer wants a map key.
+    expect(failure([{ code: 131026, title: "Receiver incapable" }])?.errorCode).toBe("131026")
+  })
+
+  it("takes the first code when Meta sends several", () => {
+    // Meta orders them cause-first, and a row has one reason.
+    expect(failure([{ code: 131047 }, { code: 131026 }])?.errorCode).toBe("131047")
+  })
+
+  it("is null when Meta gives no code, rather than an empty string", () => {
+    // A failure with no code is still a failure; "" would be a code that
+    // matches nothing in the guidance map and reads as though one was sent.
+    expect(failure([{ title: "Something went wrong" }])?.errorCode).toBeNull()
+  })
+
+  it("skips a leading error that carries no code", () => {
+    expect(failure([{ title: "no code here" }, { code: 130429 }])?.errorCode).toBe("130429")
+  })
+})
+
+describe("a deferred receipt is actually looked at again", () => {
+  /**
+   * resolveFailedReceipt declines to guess about a wamid no reminder owns, on
+   * the stated grounds that the receipt is kept and attributed later. That was
+   * a forward reference to nothing: whatsapp_status_events had a writer and no
+   * reader anywhere in the repo, so the reason sat in a row nobody read while
+   * the reminder completed its send path and stayed `sent` — the exact bug the
+   * webhook exists to prevent, surviving in the one race it documents most
+   * carefully.
+   *
+   * Source-level because what is under test is that the wiring EXISTS.
+   */
+  const receipts = readFileSync(
+    join(process.cwd(), "src/lib/notify/reminder-receipts.ts"),
+    "utf8",
+  )
+  const runCycle = readFileSync(join(process.cwd(), "src/lib/lifecycle/run-cycle.ts"), "utf8")
+
+  it("reads the receipt log, not only writes it", () => {
+    expect(receipts).toMatch(/\.from\("whatsapp_status_events"\)\s*\n\s*\.select\(/)
+  })
+
+  it("only considers receipts that never found an owner", () => {
+    expect(receipts).toMatch(/\.is\("reminder_id", null\)/)
+  })
+
+  it("stamps what it resolves, so the sweep does not re-read it forever", () => {
+    expect(receipts).toMatch(/reminder_id: owner\.id/)
+  })
+
+  it("runs the sweep before delivery, not after", () => {
+    // After delivery, a row the sweep resolves to `failed` could have been
+    // claimed and sent again in the same pass.
+    const cycle = runCycle.slice(runCycle.indexOf("export async function runReminderCycle("))
+    const sweepAt = cycle.indexOf("attributeOrphanReceipts(")
+    const deliverAt = cycle.indexOf("deliverDue(admin, options)")
+    expect(sweepAt).toBeGreaterThan(-1)
+    expect(sweepAt).toBeLessThan(deliverAt)
+  })
+
+  it("reuses the live path's own functions rather than a second implementation", () => {
+    const sweep = receipts.slice(receipts.indexOf("export async function attributeOrphanReceipts("))
+    expect(sweep).toMatch(/loadReceiptOwners\(/)
+    expect(sweep).toMatch(/recordFailedSends\(/)
   })
 })

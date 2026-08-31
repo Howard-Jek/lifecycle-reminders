@@ -12,6 +12,8 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import type { ReminderStatus } from "./types"
+import { MAX_ATTEMPTS } from "./retry-policy"
+import { PERSONAL_EVENT_TYPES } from "./event-types"
 
 /**
  * Try to take ownership of a reminder. True = this run owns it and must resolve
@@ -62,6 +64,20 @@ export async function releaseReminder(
   error: string,
   status: Extract<ReminderStatus, "queued" | "failed" | "skipped"> = "queued",
   suggestion?: string,
+  /**
+   * When this row may be tried again. Written on EVERY release, including as
+   * null — a row requeued without a wait must clear whatever an earlier failure
+   * scheduled, or it inherits a delay nobody asked for and looks stuck.
+   */
+  nextAttemptAt: string | null = null,
+  /**
+   * Meta's code for this failure, when there is one.
+   *
+   * Written on every release, including as null, for the same reason
+   * nextAttemptAt is: a row carrying the code from an earlier, different
+   * failure would send whoever reads it after the wrong cause.
+   */
+  errorCode: string | null = null,
 ): Promise<void> {
   const { error: updateErr } = await admin
     .from("reminders")
@@ -69,6 +85,8 @@ export async function releaseReminder(
       status,
       claimed_at: null,
       error: error.slice(0, 500),
+      error_code: errorCode,
+      next_attempt_at: nextAttemptAt,
       ...(suggestion ? { suggestion } : {}),
     })
     .eq("id", reminderId)
@@ -97,6 +115,11 @@ export async function stampDelivered(
     .from("reminders")
     .update({ whatsapp_message_id: whatsappMessageId })
     .eq("id", reminderId)
+    // Only onto the claim this run holds. Without it, a row that something
+    // else resolved and requeued mid-send gets a wamid while sitting at
+    // `queued` — a state that reads as "delivered" to the stuck-claim sweep's
+    // guard and blocks it from ever rescuing the row again.
+    .eq("status", "claimed")
   if (error) {
     // Worst case we are back to the old behaviour for this row: a duplicate is
     // possible. Loud, because the message HAS gone out.
@@ -106,14 +129,53 @@ export async function stampDelivered(
   }
 }
 
-/** Record a delivered reminder. */
+/**
+ * What happened to the bookkeeping write, which is not the same question as
+ * "did the message go out". The message went out either way — this is only
+ * about whether this run got to be the one that recorded it.
+ */
+export type MarkSentOutcome =
+  /** This run owned the row and wrote `sent`. */
+  | "recorded"
+  /** Something else resolved the row first — see markReminderSent's note. */
+  | "superseded"
+  /**
+   * The write itself failed.
+   *
+   * The message HAS gone out — stampDelivered wrote the wamid a statement
+   * earlier — so the row is `claimed` with a non-null whatsapp_message_id. The
+   * three original sweep passes all require that column to be NULL, reading a
+   * wamid as "delivered, do not touch", so none of them could see it. The
+   * fourth pass in requeueStuckClaims exists for exactly this row.
+   */
+  | "error"
+
+/**
+ * Record a delivered reminder.
+ *
+ * `.eq("status", "claimed")` is not defensive padding — it closes a live race.
+ * Between stampDelivered() above and this write, Meta can deliver a `failed`
+ * status callback for the very wamid we just stamped, and the webhook
+ * (recordFailedSends) resolves the row to `failed` with Meta's reason on it.
+ * Without the predicate this update would then flip that row back to `sent`
+ * and blank its `error` — erasing the only explanation of the failure anyone
+ * will ever get, and parking a reminder that was never received on the "sent"
+ * tab where nobody looks at it again.
+ *
+ * Scoping the write to the state this run actually left the row in makes the
+ * later writer win, which is right: it knows something this one does not.
+ *
+ * `superseded` is therefore a normal outcome, not an error. It is reported
+ * separately so the caller can say so rather than logging "could not be
+ * recorded" about a row that was recorded, accurately, as failed.
+ */
 export async function markReminderSent(
   admin: SupabaseClient,
   reminderId: string,
   whatsappMessageId: string,
   suggestion: string,
-): Promise<boolean> {
-  const { error } = await admin
+): Promise<MarkSentOutcome> {
+  const { data, error } = await admin
     .from("reminders")
     .update({
       status: "sent",
@@ -121,14 +183,22 @@ export async function markReminderSent(
       whatsapp_message_id: whatsappMessageId,
       suggestion,
       error: null,
+      error_code: null,
+      // Cleared with the error it belonged to. A delivered row carrying a
+      // scheduled retry is a contradiction, and the webhook can still move it
+      // back to 'failed' later — from where it is re-scheduled afresh.
+      next_attempt_at: null,
     })
     .eq("id", reminderId)
+    .eq("status", "claimed")
+    .select("id")
+    .maybeSingle()
 
   if (error) {
     console.error(`[lifecycle] mark-sent failed for reminder ${reminderId}: ${error.message}`)
-    return false
+    return "error"
   }
-  return true
+  return data ? "recorded" : "superseded"
 }
 
 /**
@@ -144,7 +214,10 @@ export async function markReminderSent(
 export async function requeueStuckClaims(
   admin: SupabaseClient,
   olderThanMinutes = 30,
-  maxAttempts = 3,
+  // Derived, not a second copy. This default was 3 while the delivery query
+  // capped at 4: only the fact that runReminderCycle passes the value
+  // explicitly kept the two from disagreeing, which is not a guarantee.
+  maxAttempts = MAX_ATTEMPTS,
 ): Promise<number> {
   const cutoff = new Date(Date.now() - olderThanMinutes * 60_000).toISOString()
 
@@ -152,6 +225,88 @@ export async function requeueStuckClaims(
   // query filters `attempts < maxAttempts`, so requeueing them just moves the
   // zombie from 'claimed' to 'queued' where it is equally invisible. Give them
   // the terminal state instead.
+  /**
+   * Personal dates do not come back from a crash either.
+   *
+   * planRetry refuses to reschedule a birthday, but that only governs the
+   * FAILURE path — this sweep requeued any stuck row on the attempts cap alone,
+   * whatever the date was about. So a birthday whose worker died was quietly
+   * redelivered on the next tick, and after a longer outage the greeting went
+   * out days late: the exact "late is worse than never" outcome the policy
+   * exists to prevent, reached by the one path that never consulted it.
+   *
+   * Resolved to 'failed' first, so the requeue pass below no longer matches
+   * them. The embed is `!inner` here on purpose — unlike the delivery query,
+   * this one WANTS to consider only rows whose event still exists.
+   */
+  const { data: personal, error: personalErr } = await admin
+    .from("reminders")
+    .select("id, contact_events!inner(event_type)")
+    .eq("status", "claimed")
+    .lt("claimed_at", cutoff)
+    .is("whatsapp_message_id", null)
+    .in("contact_events.event_type", [...PERSONAL_EVENT_TYPES])
+  if (personalErr) {
+    console.error(`[lifecycle] personal stuck-claim sweep failed: ${personalErr.message}`)
+  } else if (personal && personal.length > 0) {
+    const { error } = await admin
+      .from("reminders")
+      .update({
+        status: "failed",
+        claimed_at: null,
+        error: "Delivery was interrupted, and a personal date is not sent late.",
+      })
+      .in(
+        "id",
+        personal.map((r) => r.id as string),
+      )
+      // Re-asserted at the write, like every other conditional update here. The
+      // select and this update are two statements, and a row that resolved in
+      // between would otherwise be clobbered to `failed` with a reason that is
+      // not true of it.
+      .eq("status", "claimed")
+      .is("whatsapp_message_id", null)
+    if (error) {
+      console.error(`[lifecycle] personal stuck-claim resolve failed: ${error.message}`)
+    } else {
+      console.warn(`[lifecycle] ${personal.length} interrupted personal reminders not retried`)
+    }
+  }
+
+  /**
+   * The row whose message went out and whose bookkeeping did not.
+   *
+   * stampDelivered writes the wamid in its own statement, before the status
+   * flip, so markReminderSent failing leaves `claimed` with a NON-NULL wamid.
+   * Every other pass here requires that column to be NULL — they read a wamid
+   * as "delivered, do not resend", which is right — so this row was visible to
+   * none of them. It is not `queued`, so the delivery loop skips it; it is
+   * `claimed`, which applyReminderScope deliberately puts on no tab; and
+   * deliverOne returned "sent", so the cycle counted it as delivered. A message
+   * reached a handset and the only record of it was one console.error.
+   *
+   * Resolved to `sent`, because that is what the wamid MEANS: Meta accepted it.
+   * Reconstructing the bookkeeping is the honest outcome — the alternative,
+   * requeueing, would send a second copy of a message already delivered.
+   *
+   * sent_at is set to now rather than to when it actually went, which is not
+   * recoverable; the error line says so instead of quietly implying precision.
+   */
+  const { error: strandedErr } = await admin
+    .from("reminders")
+    .update({
+      status: "sent",
+      claimed_at: null,
+      sent_at: new Date().toISOString(),
+      error: "Delivered, but recorded late — the send succeeded and the bookkeeping did not.",
+    })
+    .eq("status", "claimed")
+    .lt("claimed_at", cutoff)
+    .not("whatsapp_message_id", "is", null)
+  if (strandedErr) {
+    console.error(`[lifecycle] stranded-delivery sweep failed: ${strandedErr.message}`)
+  }
+
   const { error: exhaustErr } = await admin
     .from("reminders")
     .update({

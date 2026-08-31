@@ -82,7 +82,13 @@ export function buildReminderComponents(p: ReminderAlertParams): Record<string, 
 
 export type ReminderAlertResult =
   | { ok: true; whatsappMessageId: string }
-  | { ok: false; reason: "not_configured" | "send_failed"; error?: string }
+  | {
+      ok: false
+      reason: "not_configured" | "send_failed"
+      error?: string
+      /** Meta's error code, when Meta was reached and gave one. */
+      code?: string | null
+    }
 
 /**
  * Send one reminder to one agent's number. Never throws — the caller records
@@ -109,7 +115,7 @@ export async function sendClientEventReminder(
     return { ok: false, reason: "send_failed", error: e instanceof Error ? e.message : String(e) }
   }
 
-  if (!res.ok) return { ok: false, reason: "send_failed", error: res.error }
+  if (!res.ok) return { ok: false, reason: "send_failed", error: res.error, code: res.code }
   return { ok: true, whatsappMessageId: res.whatsappMessageId }
 }
 
@@ -146,7 +152,27 @@ export const CLIENT_EVENT_REMINDER_BODY_TEXT =
   "📅 Reminder: {{1}} has {{2}} coming up {{3}}.\n\nSuggested message:\n{{4}}\n\n" +
   "Open their profile: {{5}}\nCopy the message above, edit it if you like, and send it yourself."
 
-export function clientEventReminderTemplateDefinition(): Record<string, unknown> {
+/**
+ * @param example What {{2}} and {{4}} should show Meta's reviewer. Defaults to
+ * insurance, which is what is already approved on the live WABA.
+ *
+ * THE BODY IS NOT PARAMETERISED, and does not need to be. `{{2}}` is a free-text
+ * event label filled at send time by humaniseEventType, so "Recall due" and
+ * "Rate expiry" already flow through the template exactly as approved. Only the
+ * EXAMPLES differ, and examples are a review aid — they constrain nothing about
+ * what may be sent.
+ *
+ * Which is why this is for a FRESH registration only. Meta stores the examples
+ * at submission, so changing them means resubmitting, and resubmitting an
+ * APPROVED template re-opens review and pauses a template that is currently
+ * sending. ensureReminderTemplate must keep refusing to resubmit an approved
+ * one; a dentist reading "Policy expiry" in a Meta console they never open is
+ * not worth a day of silence.
+ */
+export function clientEventReminderTemplateDefinition(example?: {
+  eventLabel: string
+  suggestion: string
+}): Record<string, unknown> {
   return {
     name: CLIENT_EVENT_REMINDER_TEMPLATE,
     language: CLIENT_EVENT_REMINDER_LANGUAGE,
@@ -159,9 +185,10 @@ export function clientEventReminderTemplateDefinition(): Record<string, unknown>
           body_text: [
             [
               "Jane Tan",
-              "Policy expiry",
+              example?.eventLabel ?? "Policy expiry",
               "in a month",
-              "Hi Jane, just a heads up that your policy is up for renewal next month — happy to walk you through the options if useful.",
+              example?.suggestion ??
+                "Hi Jane, just a heads up that your policy is up for renewal next month — happy to walk you through the options if useful.",
               "https://app.example.com/contacts/00000000-0000-0000-0000-000000000000",
             ],
           ],

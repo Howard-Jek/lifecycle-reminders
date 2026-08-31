@@ -34,6 +34,10 @@ import {
   stampDelivered,
 } from "./claim-reminder"
 import { todayInTimezone, daysBetween } from "./occurrence"
+import { planRetry, describeGiveUp, MAX_ATTEMPTS, PERMANENT_FAILURE } from "./retry-policy"
+import { attributeOrphanReceipts } from "@/lib/notify/reminder-receipts"
+import { packForVertical } from "./vertical-packs"
+import { isRetryableFailure } from "@/lib/whatsapp-errors"
 import { humaniseEventType } from "./labels"
 import { draftSuggestion, fallbackSuggestion } from "./suggest-message"
 import {
@@ -77,10 +81,6 @@ const MAX_DELIVERIES_PER_RUN = 40
  * for nothing).
  */
 const DELIVERY_BUDGET_MS = 4 * 60 * 1000
-
-/** Give up after this many attempts, so a permanently bad number does not
- * retry forever. */
-const MAX_ATTEMPTS = 3
 
 const DEFAULT_TIMEZONE = "Asia/Singapore"
 
@@ -146,6 +146,11 @@ export async function runReminderCycle(
   // forever, because the delivery query only looks at 'queued'.
   const requeued = await requeueStuckClaims(admin, 30, MAX_ATTEMPTS)
   if (requeued > 0) console.warn(`[lifecycle] requeued ${requeued} stuck reminder claims`)
+
+  // Failures Meta reported before we had finished writing down the message id
+  // they belong to. Runs BEFORE delivery so a row it resolves to `failed` is
+  // not claimed and sent again in the same pass.
+  await attributeOrphanReceipts(admin)
 
   const materialised = await materialiseAll(admin)
   const delivered = await deliverDue(admin, options)
@@ -220,7 +225,7 @@ async function materialiseAll(admin: SupabaseClient) {
   let inserted = 0
 
   for (const [businessId, tenantRules] of byTenant) {
-    const timezone = await loadTimezone(admin, businessId)
+    const { timezone } = await loadTenantBasics(admin, businessId)
     const today = todayInTimezone(new Date(), timezone)
 
     const eventTypes = Array.from(new Set(tenantRules.map((r) => r.event_type)))
@@ -293,17 +298,22 @@ async function fetchAllEvents(
  * Never throws and never returns empty: `Intl` handed an empty zone throws a
  * RangeError, which would take down the whole tick over one missing column.
  */
-async function loadTimezone(admin: SupabaseClient, businessId: string): Promise<string> {
+async function loadTenantBasics(
+  admin: SupabaseClient,
+  businessId: string,
+): Promise<{ timezone: string; vertical: string | null }> {
+  // One row, two facts. `vertical` decides how the drafting prompt describes
+  // this operator's business; it rides on the query the timezone already needed.
   const { data, error } = await admin
     .from("businesses")
-    .select("timezone")
+    .select("timezone, vertical")
     .eq("id", businessId)
-    .maybeSingle<{ timezone: string | null }>()
+    .maybeSingle<{ timezone: string | null; vertical: string | null }>()
   if (error) {
-    console.error(`[lifecycle] timezone lookup failed for ${businessId}: ${error.message}`)
-    return DEFAULT_TIMEZONE
+    console.error(`[lifecycle] tenant lookup failed for ${businessId}: ${error.message}`)
+    return { timezone: DEFAULT_TIMEZONE, vertical: null }
   }
-  return data?.timezone || DEFAULT_TIMEZONE
+  return { timezone: data?.timezone || DEFAULT_TIMEZONE, vertical: data?.vertical ?? null }
 }
 
 async function loadAssignments(
@@ -362,6 +372,14 @@ type DueRow = {
   occurrence_date: string
   member_id: string | null
   attempts: number
+  /**
+   * Embedded, not joined with `!inner`. An inner join would silently stop
+   * selecting rows whose event has been deleted, and those rows need to be
+   * SELECTED so deliverOne can resolve them to 'skipped' — dropping them from
+   * the query leaves them queued forever, which is the zombie state the
+   * attempts cap exists to prevent, reached by a different door.
+   */
+  contact_events: { event_type: string } | null
 }
 
 async function deliverDue(admin: SupabaseClient, options: CycleOptions = {}) {
@@ -395,7 +413,10 @@ async function deliverDue(admin: SupabaseClient, options: CycleOptions = {}) {
 
   let query = admin
     .from("reminders")
-    .select("id, business_id, event_id, rule_id, occurrence_date, member_id, attempts")
+    .select(
+      "id, business_id, event_id, rule_id, occurrence_date, member_id, attempts, " +
+        "contact_events(event_type)",
+    )
     .eq("status", "queued")
     .lt("attempts", MAX_ATTEMPTS)
     .order("due_at", { ascending: true })
@@ -408,6 +429,20 @@ async function deliverDue(admin: SupabaseClient, options: CycleOptions = {}) {
     if (ids.length === 0) return { sent: 0, failed: 0, skipped: 0 }
     query = query.in("id", ids)
   } else {
+    /**
+     * A row that failed and was rescheduled waits its turn. NULL is "eligible
+     * now" — every first attempt, and every row that predates this column.
+     *
+     * IN THE AUTOMATIC BRANCH ONLY, beside the due_at filter and for the same
+     * reason. A person clicking Send on a row they are looking at is a better
+     * authority on whether it should go than a backoff timer is, exactly as
+     * they are a better authority than due_at. Left on the shared query this
+     * silently overrode them: the row matched nothing, the cycle returned
+     * zeros, and the button reported "Nothing was sent" with no reason, for as
+     * long as three days.
+     */
+    query = query.or(`next_attempt_at.is.null,next_attempt_at.lte.${nowIso}`)
+
     /**
      * THE GATE. Businesses that have not switched automatic sending on are not
      * queried at all.
@@ -426,10 +461,20 @@ async function deliverDue(admin: SupabaseClient, options: CycleOptions = {}) {
       .eq("auto_send_enabled", true)
 
     if (gateError) {
-      // Fail CLOSED. Not knowing whether sending is permitted must never
-      // resolve to sending.
-      console.error(`[lifecycle] auto-send gate unreadable, sending nothing: ${gateError.message}`)
-      return { sent: 0, failed: 0, skipped: 0 }
+      /**
+       * Fail CLOSED and LOUD. Throwing also sends nothing, so the closed
+       * property is kept — what changes is that the cycle stops claiming it
+       * succeeded.
+       *
+       * Returning zeros here was worse than the queue-read case below, because
+       * it fails EARLIER: runReminderCycle returned normally, the heartbeat row
+       * was written, the cron answered 200 ok:true, the workflow went green and
+       * the in-app banner said `live`. Every observable in the system reported
+       * health while nothing had been delivered for as long as the condition
+       * lasted. This filters on a column, so it is vulnerable to exactly the
+       * hand-applied-migration drift the throw below is written for.
+       */
+      throw new Error(`could not read the auto-send gate: ${gateError.message}`)
     }
 
     const ids = (enabled ?? []).map((b) => b.id as string)
@@ -443,11 +488,33 @@ async function deliverDue(admin: SupabaseClient, options: CycleOptions = {}) {
   const { data, error } = await query
 
   if (error) {
-    console.error(`[lifecycle] due reminders fetch failed: ${error.message}`)
-    return { sent: 0, failed: 0, skipped: 0 }
+    /**
+     * THROW, do not return zeros.
+     *
+     * Returning `{sent:0}` here reports "there was nothing to send" for what is
+     * actually "the queue could not be read", and every layer above believes
+     * it: runReminderCycle returns normally, the cron route answers 200 with
+     * ok:true, and the tick workflow goes green every fifteen minutes while
+     * nothing is delivered. reminders-tick.yml guards a 200 with ok:false
+     * precisely because "the job would go green on a broken run, which is the
+     * failure mode a scheduler is least able to afford" — and this path walked
+     * around that guard.
+     *
+     * The likeliest trigger is a schema drift the deploy order makes routine:
+     * Vercel ships on push while migrations are applied by hand, so a column
+     * this query filters on can be absent for minutes. That must page someone,
+     * not read as an empty queue.
+     */
+    throw new Error(`could not read the reminder queue: ${error.message}`)
   }
 
-  const candidates = (data ?? []) as DueRow[]
+  /**
+   * Through `unknown` because of the embed: PostgREST's generated types model
+   * an embedded relation as a union that includes GenericStringError, so the
+   * direct cast is rejected even though the shape is right. Same accommodation
+   * the reminders page makes for the same reason.
+   */
+  const candidates = (data ?? []) as unknown as DueRow[]
   if (candidates.length === 0) return { sent: 0, failed: 0, skipped: 0 }
 
   /**
@@ -527,11 +594,23 @@ async function deliverDue(admin: SupabaseClient, options: CycleOptions = {}) {
       // blip) returns to 'queued' at attempts = MAX, where the delivery filter
       // excludes it forever: the same zombie the terminal 'failed' state was
       // added to prevent, reached by a different path.
+      const message = err instanceof Error ? err.message : String(err)
+      const plan = planRetry({
+        eventType: row.contact_events?.event_type ?? null,
+        attemptsBurnt: row.attempts + 1,
+        occurrenceDate: row.occurrence_date,
+        now: new Date(),
+        // loadDeliveryContext is itself one of the things that can throw, so
+        // fall back rather than assume this tenant's timezone was resolved.
+        timezone: tenantCache.get(row.business_id)?.timezone ?? DEFAULT_TIMEZONE,
+      })
       await releaseReminder(
         admin,
         row.id,
-        err instanceof Error ? err.message : String(err),
-        row.attempts + 1 >= MAX_ATTEMPTS ? "failed" : "queued",
+        plan.retry ? message : `${message} — ${describeGiveUp(plan.reason)}`,
+        plan.retry ? "queued" : "failed",
+        undefined,
+        plan.retry ? plan.nextAttemptAt : null,
       )
       failed++
     }
@@ -541,8 +620,8 @@ async function deliverDue(admin: SupabaseClient, options: CycleOptions = {}) {
 }
 
 async function loadDeliveryContext(admin: SupabaseClient, businessId: string) {
-  const [timezone, { data: memberRows }, { data: ruleRows }] = await Promise.all([
-    loadTimezone(admin, businessId),
+  const [basics, { data: memberRows }, { data: ruleRows }] = await Promise.all([
+    loadTenantBasics(admin, businessId),
     admin.from("team_members").select("*").eq("business_id", businessId),
     admin.from("reminder_rules").select("*").eq("business_id", businessId),
   ])
@@ -563,7 +642,14 @@ async function loadDeliveryContext(admin: SupabaseClient, businessId: string) {
   const ownerNumber =
     allMembers.find((m) => m.role === "owner" && m.active)?.whatsapp_number?.trim() || null
 
-  return { timezone, members, rules, ownerNumber, guardrails: NO_GUARDRAILS }
+  return {
+    timezone: basics.timezone,
+    members,
+    rules,
+    ownerNumber,
+    guardrails: NO_GUARDRAILS,
+    industryFraming: packForVertical(basics.vertical).framing,
+  }
 }
 
 async function deliverOne(
@@ -628,6 +714,7 @@ async function deliverOne(
         leadContext: (lead.context ?? {}) as Record<string, unknown>,
         agentName: member?.display_name ?? null,
         guardrails: ctx.guardrails,
+      industryFraming: ctx.industryFraming,
       })
     : null
 
@@ -672,16 +759,51 @@ async function deliverOne(
     // once it reaches the cap this row would never be selected again and would
     // sit at 'queued' forever — invisible, un-retried, and counted as pending.
     // Give it a terminal 'failed' state instead, so it surfaces in the UI.
-    const terminal = res.reason === "not_configured"
-    const exhausted = row.attempts + 1 >= MAX_ATTEMPTS
+    if (res.reason === "not_configured") {
+      await releaseReminder(admin, row.id, res.error ?? res.reason, "skipped", suggestion)
+      return "skipped"
+    }
+
+    /**
+     * Everything else is a candidate for another attempt — but only a
+     * candidate, and it has to pass the SAME two gates a failure reported by
+     * webhook passes (see resolveFailedReceipt).
+     *
+     * isRetryableFailure asks whether repeating this exact send could ever
+     * work. Without it a number Meta has already refused burns every remaining
+     * attempt, billed, to learn what the first one said — and the identical
+     * failure arriving moments later as a receipt would have stopped at one.
+     * That asymmetry is the thing this whole change set exists to remove, and
+     * it pointed this way round until the Graph error code was kept.
+     *
+     * planRetry then asks whether it is worth doing: not for a personal date,
+     * not past the date it is about, not past the cap. Each refusal is
+     * terminal, and terminal matters as much as the retry does — `attempts`
+     * was already incremented by the claim, so a row left at 'queued' past the
+     * cap would never be selected again and would sit there invisible,
+     * un-retried and counted as pending. 'failed' puts it in front of somebody.
+     */
+    const errorCode = res.code ?? null
+    const reason = res.error ?? res.reason
+    const plan = isRetryableFailure(errorCode, res.error)
+      ? planRetry({
+          eventType: event.event_type,
+          attemptsBurnt: row.attempts + 1,
+          occurrenceDate: row.occurrence_date,
+          now: new Date(),
+          timezone: ctx.timezone,
+        })
+      : PERMANENT_FAILURE
     await releaseReminder(
       admin,
       row.id,
-      res.error ?? res.reason,
-      terminal ? "skipped" : exhausted ? "failed" : "queued",
+      plan.retry ? reason : `${reason} — ${describeGiveUp(plan.reason)}`,
+      plan.retry ? "queued" : "failed",
       suggestion,
+      plan.retry ? plan.nextAttemptAt : null,
+      errorCode,
     )
-    return terminal ? "skipped" : "failed"
+    return "failed"
   }
 
   // Stamp the wamid FIRST, in its own write. The stuck-claim sweep's "already
@@ -691,9 +813,31 @@ async function deliverOne(
   await stampDelivered(admin, row.id, res.whatsappMessageId)
 
   const recorded = await markReminderSent(admin, row.id, res.whatsappMessageId, suggestion)
-  if (!recorded) {
+  if (recorded === "error") {
     console.error(
       `[lifecycle] reminder ${row.id} delivered (${res.whatsappMessageId}) but could not be recorded`,
+    )
+  } else if (recorded === "superseded") {
+    /**
+     * Something else resolved this row while the send was in flight. Which
+     * something is not knowable from a zero-row update, and there are three
+     * candidates — a delivery receipt (the expected one), the row being deleted
+     * by a cascade, and a bulk requeue unclaiming it — so the row is re-read
+     * rather than a cause being asserted.
+     *
+     * Naming the wrong cause is worse than naming none: it sends whoever reads
+     * this hunting whatsapp_status_events for a receipt that does not exist,
+     * and buries the fact that a billed message went out.
+     */
+    const { data: after } = await admin
+      .from("reminders")
+      .select("status, error")
+      .eq("id", row.id)
+      .maybeSingle<{ status: string; error: string | null }>()
+    console.warn(
+      `[lifecycle] reminder ${row.id} (${res.whatsappMessageId}) was resolved by something else ` +
+        `mid-send — it is now ${after ? `'${after.status}'${after.error ? `: ${after.error}` : ""}` : "gone"}. ` +
+        `The message WAS sent; keeping whatever resolved it.`,
     )
   }
 

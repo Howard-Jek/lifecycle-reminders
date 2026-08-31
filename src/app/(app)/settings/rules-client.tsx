@@ -15,7 +15,7 @@ import {
   createReminderRule,
   updateReminderRule,
   deleteReminderRule,
-  seedInsuranceRules,
+  seedStarterRules,
   type RuleInput,
 } from "@/app/actions/reminder-rules"
 import type { ReminderRule } from "@/lib/lifecycle/types"
@@ -29,7 +29,7 @@ const BLANK: RuleInput = {
   active: true,
 }
 
-export function RulesClient({ rules }: { rules: ReminderRule[] }) {
+export function RulesClient({ rules, packName }: { rules: ReminderRule[]; packName: string }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -58,8 +58,8 @@ export function RulesClient({ rules }: { rules: ReminderRule[] }) {
         <div className="min-w-0">
           <h2 className="text-base font-semibold">Reminder rules</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            When a date approaches, who hears about it. Event types are free text — insurance is
-            just the first set.
+            When a date approaches, who hears about it. Event types are free text, and the
+            starting set follows the industry on your business profile.
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -69,7 +69,7 @@ export function RulesClient({ rules }: { rules: ReminderRule[] }) {
               disabled={pending}
               onClick={() =>
                 startTransition(async () => {
-                  const result = await seedInsuranceRules()
+                  const result = await seedStarterRules()
                   if (result.ok) {
                     setNotice(`Added ${result.data} starter rules — edit or delete any of them.`)
                     router.refresh()
@@ -78,7 +78,7 @@ export function RulesClient({ rules }: { rules: ReminderRule[] }) {
               }
             >
               <Sparkles data-icon="inline-start" />
-              Seed insurance defaults
+              Seed the {packName} rules
             </Button>
           )}
           {!draft && (

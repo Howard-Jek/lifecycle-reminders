@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { isPolicyLike, PERSONAL_EVENT_TYPES, listKnownEventTypes } from "@/lib/lifecycle/event-types"
+import { isHoldingType, PERSONAL_EVENT_TYPES, listKnownEventTypes } from "@/lib/lifecycle/event-types"
 import { buildKnownTypes } from "@/lib/lifecycle/event-facts"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
@@ -132,19 +132,19 @@ describe("listKnownEventTypes", () => {
   })
 })
 
-describe("isPolicyLike", () => {
+describe("isHoldingType", () => {
   it("treats an unknown type as a policy", () => {
     // Deliberately open: the engine is a generic temporal trigger, so a
     // warranty or visa renewal is a product the client holds.
-    expect(isPolicyLike("warranty_expiry")).toBe(true)
-    expect(isPolicyLike("policy_expiry")).toBe(true)
+    expect(isHoldingType("warranty_expiry")).toBe(true)
+    expect(isHoldingType("policy_expiry")).toBe(true)
   })
 
   it("excludes the personal dates", () => {
-    for (const type of PERSONAL_EVENT_TYPES) expect(isPolicyLike(type)).toBe(false)
+    for (const type of PERSONAL_EVENT_TYPES) expect(isHoldingType(type)).toBe(false)
   })
 
   it("is exact, so a differently-spelled birthday counts as a policy", () => {
-    expect(isPolicyLike("Birthday")).toBe(true)
+    expect(isHoldingType("Birthday")).toBe(true)
   })
 })

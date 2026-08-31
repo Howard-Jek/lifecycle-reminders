@@ -383,6 +383,57 @@ async function main() {
     }
   }
 
+  // 2b. Columns ─────────────────────────────────────────────────────────────
+  //
+  // Tables existing is not the same as the schema being current, and the gap
+  // between the two is the normal state of this deployment: Vercel ships on
+  // push while migrations are applied by hand in the SQL editor. Every table
+  // above can be present while a column three migrations old is not.
+  //
+  // It matters more since the queue read started throwing rather than
+  // reporting an empty queue. That is the right behaviour — a broken tick must
+  // not go green — but it turns a missing column into a 500 on the Reminders
+  // page, and the Postgres error that says which column is buried in a server
+  // log. Naming it here costs one request per column and answers the question
+  // directly.
+  if (!admin) {
+    reportNoDatabase("Schema version")
+  } else {
+    const REQUIRED_COLUMNS: Array<[table: string, column: string, migration: string]> = [
+      ["reminders", "error_code", "20260901000000_reminder_error_code"],
+      ["whatsapp_status_events", "error_code", "20260901000000_reminder_error_code"],
+      ["businesses", "vertical", "20260901010000_vertical_standin"],
+      ["reminders", "next_attempt_at", "20260901020000_reminder_retry_schedule"],
+      ["businesses", "auto_send_enabled", "20260830180000_auto_send_flag"],
+    ]
+
+    const missing: string[] = []
+    const pending = new Set<string>()
+    for (const [table, column, migration] of REQUIRED_COLUMNS) {
+      const { error } = await admin.from(table).select(column).limit(1)
+      // 42703 is "column does not exist". Anything else is a different
+      // problem, and the table probes above have already reported it.
+      if (error?.code === "42703") {
+        missing.push(`${table}.${column}`)
+        pending.add(migration)
+      }
+    }
+
+    if (missing.length > 0) {
+      report(
+        "FAIL",
+        "Schema version",
+        `missing ${missing.join(", ")}`,
+        `Apply ${[...pending].sort().join(", ")} — they are in supabase/migrations/ and ` +
+          "collected in supabase/schema/. All are additive and guarded with IF NOT EXISTS, " +
+          "so re-running is a no-op. Until then the Reminders page errors rather than " +
+          "showing an empty queue.",
+      )
+    } else {
+      report("PASS", "Schema version", `all ${REQUIRED_COLUMNS.length} required columns present`)
+    }
+  }
+
   // 3. Reminder rules ───────────────────────────────────────────────────────
   if (!admin) {
     reportNoDatabase("Reminder rules")

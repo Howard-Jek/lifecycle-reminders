@@ -4,6 +4,9 @@ import { getTenant } from "@/lib/tenant"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { Wordmark } from "@/components/wordmark"
 import { ThemeToggle } from "@/components/theme-toggle"
+import { VerticalSwitcher } from "@/components/dev/vertical-switcher"
+import { devVerticalOverride } from "@/lib/dev/vertical-switch"
+import { isProductionRuntime } from "@/lib/env"
 import { NavLink } from "@/components/shell/nav-link"
 import { MobileNav } from "@/components/shell/mobile-nav"
 import { SignOutMenuItem } from "@/components/shell/sign-out-item"
@@ -47,6 +50,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     .eq("business_id", tenant.businessId)
     .eq("status", "pending")
 
+  // Local only, and null in production without reading anything.
+  const devVertical = await devVerticalOverride()
+
   const initials = (tenant.email ?? "?").slice(0, 2).toUpperCase()
 
   return (
@@ -83,6 +89,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           </nav>
 
           <div className="flex shrink-0 items-center gap-1 sm:gap-3">
+            {/* Local only. isProductionRuntime fails closed, and the action and
+                the cookie read check it again — a render gate on its own is not
+                a gate, because a "use server" export is a public endpoint. */}
+            {!isProductionRuntime() && <VerticalSwitcher current={devVertical} />}
             <ThemeToggle />
             <DropdownMenu>
               <DropdownMenuTrigger className="relative flex h-8 w-8 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring">

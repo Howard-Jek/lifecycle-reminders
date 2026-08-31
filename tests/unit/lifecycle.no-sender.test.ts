@@ -120,15 +120,23 @@ describe("runReminderCycle with no sender", () => {
     const result = await runReminderCycle(admin)
 
     // The stuck-claim sweep DOES write, before delivery and regardless of any
-    // sender: two filtered bulk UPDATEs that match nothing on a healthy queue.
-    // One of them legitimately sets status='failed' (a claim that died with no
-    // attempts left), so `failed` cannot be the marker here.
+    // sender: filtered bulk UPDATEs that match nothing on a healthy queue. Some
+    // legitimately set status='failed' (a claim that died with no attempts
+    // left), so `failed` cannot be the marker here.
     //
     // `skipped` can, because nothing else in the cycle produces it — it was
     // written by exactly one line, the not_configured branch this change
     // removed. Its absence IS the regression test.
     expect(patches.filter((p) => p.status === "skipped")).toEqual([])
-    expect(patches.filter((p) => p.status === "sent")).toEqual([])
+
+    // `sent` has one legitimate writer in a sweep: the stranded-delivery pass,
+    // which recovers a row whose message WAS accepted by Meta and whose
+    // bookkeeping write failed. It is scoped to rows carrying a wamid, so it
+    // can never touch an undelivered reminder — but this stub cannot model
+    // filters, so it is identified by the reason it writes. Any OTHER `sent`
+    // would mean the cycle claimed to deliver something with no sender at all.
+    const sent = patches.filter((p) => p.status === "sent")
+    expect(sent.filter((p) => !String(p.error ?? "").includes("recorded late"))).toEqual([])
 
     expect(result.sent).toBe(0)
     expect(result.failed).toBe(0)

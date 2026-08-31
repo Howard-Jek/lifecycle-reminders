@@ -97,14 +97,3 @@ export type PlannedReminder = {
   member_id: string | null
 }
 
-/** Sensible starting rules for a new insurance-style operator. Data, not code:
- * seeded into reminder_rules so the operator can edit or delete any of them. */
-export const DEFAULT_INSURANCE_RULES: ReadonlyArray<
-  Pick<ReminderRule, "event_type" | "offset_days" | "send_window"> & { label: string }
-> = [
-  { event_type: "birthday", offset_days: 7, send_window: "morning", label: "Birthday — a week ahead" },
-  { event_type: "birthday", offset_days: 0, send_window: "morning", label: "Birthday — on the day" },
-  { event_type: "policy_expiry", offset_days: 30, send_window: "morning", label: "Policy expiry — a month ahead" },
-  { event_type: "policy_expiry", offset_days: 7, send_window: "morning", label: "Policy expiry — a week ahead" },
-  { event_type: "policy_review", offset_days: 14, send_window: "afternoon", label: "Policy review — two weeks ahead" },
-]

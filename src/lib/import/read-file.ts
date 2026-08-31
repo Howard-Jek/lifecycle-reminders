@@ -186,7 +186,22 @@ const PATTERNS = {
   ],
 } as const
 
-export function guessHeaders(headers: string[]): HeaderGuess {
+/**
+ * @param extraDatePatterns Header shapes this operator's industry uses, from
+ * their reminder pack.
+ *
+ * ADDITIVE ONLY, and the direction matters. These can make a column be NOTICED
+ * as a date — a dental sheet's "Recall" column is invisible to the generic
+ * patterns — and they can never rename one. eventTypeFromHeader still derives
+ * the type from the operator's own words, because the moment a pack could
+ * decide what a column MEANS, a training provider's "Visa Expiry" becomes a
+ * course certification. See the note on eventTypeFromHeader for the version of
+ * that bug this codebase already shipped once.
+ */
+export function guessHeaders(
+  headers: string[],
+  extraDatePatterns: readonly RegExp[] = [],
+): HeaderGuess {
   const pick = (patterns: readonly RegExp[]) =>
     headers.find((h) => patterns.some((re) => re.test(h))) ?? null
 
@@ -195,10 +210,9 @@ export function guessHeaders(headers: string[]): HeaderGuess {
   const email = pick(PATTERNS.email)
   const agent = pick(PATTERNS.agent)
 
+  const datePatterns = [...PATTERNS.date, ...extraDatePatterns]
   const claimed = new Set([name, phone, email, agent].filter(Boolean) as string[])
-  const dateColumns = headers.filter(
-    (h) => !claimed.has(h) && PATTERNS.date.some((re) => re.test(h)),
-  )
+  const dateColumns = headers.filter((h) => !claimed.has(h) && datePatterns.some((re) => re.test(h)))
 
   return { name, phone, email, agent, dateColumns }
 }

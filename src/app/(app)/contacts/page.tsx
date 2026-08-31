@@ -6,7 +6,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge"
 import { ContactSearch } from "./search"
 import { Users, Cake, ChevronRight } from "lucide-react"
-import { isPolicyLike } from "@/lib/lifecycle/event-types"
+import { isHoldingType } from "@/lib/lifecycle/event-types"
+import { currentPack } from "@/lib/lifecycle/current-pack"
+import { devVerticalScope } from "@/lib/dev/vertical-scope"
 
 export const metadata = { title: "Contacts" }
 
@@ -64,10 +66,21 @@ export default async function ContactsPage({
   // rides alongside rather than after. A Supabase round-trip is ~130ms from a
   // laptop regardless of what it returns; sequencing two independent queries
   // doubles that for nothing.
-  const [{ data, count, error }, memberRes] = await Promise.all([
+  // Dev-only: when an industry is being previewed, the list is that industry's
+  // demo contacts. Null in production and whenever no override is chosen, and
+  // null means NO filter — see vertical-scope.ts on why it fails open.
+  const scope = await devVerticalScope(admin, tenant.businessId)
+  if (scope) query = query.in("id", scope.leadIds)
+
+  const [{ data, count, error }, memberRes, businessRes] = await Promise.all([
     query,
     admin.from("team_members").select("id, display_name").eq("business_id", tenant.businessId),
+    // The industry, for what to CALL the things a contact holds. Rides
+    // alongside for the same reason the roster does: an independent round trip
+    // costs the same as no round trip when it runs in parallel.
+    admin.from("businesses").select("vertical").eq("id", tenant.businessId).maybeSingle(),
   ])
+  const pack = await currentPack(businessRes.data?.vertical as string | null)
   const rows = data ?? []
   // Logged here so the detail survives for whoever debugs it; the page below
   // renders a fixed string instead.
@@ -93,7 +106,7 @@ export default async function ContactsPage({
       )
     for (const e of events ?? []) {
       const id = e.lead_id as string
-      const bucket = isPolicyLike(e.event_type as string) ? policies : personal
+      const bucket = isHoldingType(e.event_type as string) ? policies : personal
       bucket.set(id, (bucket.get(id) ?? 0) + 1)
     }
   }
@@ -105,8 +118,8 @@ export default async function ContactsPage({
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Contacts</h1>
         <p className="text-sm text-muted-foreground">
-          {count ?? 0} {count === 1 ? "contact" : "contacts"}, counted by the policy dates on file.
-          A cake means we also know their birthday.
+          {count ?? 0} {count === 1 ? "contact" : "contacts"}, counted by the {pack.holding.inline}{" "}
+          on file. A cake means we also know their birthday.
         </p>
       </div>
 
@@ -155,7 +168,7 @@ export default async function ContactsPage({
                   <TableHead className="pl-5 sm:w-[30%]">Name</TableHead>
                   <TableHead className="hidden sm:table-cell sm:w-[22%]">Phone</TableHead>
                   <TableHead className="hidden sm:table-cell sm:w-[24%]">Agent</TableHead>
-                  <TableHead className="w-[7.5rem] pr-5 text-right">Policy dates</TableHead>
+                  <TableHead className="w-[7.5rem] pr-5 text-right">{pack.holding.column}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>

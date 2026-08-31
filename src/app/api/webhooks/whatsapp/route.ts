@@ -6,8 +6,12 @@ import {
   buildSenderIndex,
   matchSender,
   type InboundMessage,
-  type StatusEvent,
 } from "@/lib/notify/webhook-events"
+import {
+  loadReceiptOwners,
+  recordFailedSends,
+  recordStatusEvents,
+} from "@/lib/notify/reminder-receipts"
 
 /**
  * Meta's callback URL for the platform WhatsApp number.
@@ -98,11 +102,25 @@ export async function POST(request: Request) {
 
   try {
     const admin = createAdminClient()
-    const [failed, stored, recorded] = await Promise.all([
-      recordFailedSends(admin, statuses),
+    // Resolved ONCE and shared. Both writers below ask the same question — who
+    // owns this wamid — and asking twice lets them answer it differently, which
+    // is how a receipt gets logged against a reminder it was not applied to.
+    const owners = await loadReceiptOwners(admin, statuses)
+    // allSettled, not all: with `all` a second concurrent rejection is
+    // discarded, so an operator fixes what the log named, redeploys, and hits
+    // the other one with an identical 500 and nothing to say it had changed.
+    const settled = await Promise.allSettled([
+      recordFailedSends(admin, statuses, owners),
       storeInboundMessages(admin, messages),
-      recordStatusEvents(admin, statuses),
+      recordStatusEvents(admin, statuses, owners),
     ])
+    const reasons = settled.flatMap((r) => (r.status === "rejected" ? [r.reason] : []))
+    if (reasons.length > 0) {
+      throw new AggregateError(reasons, reasons.map((r) => String(r)).join("; "))
+    }
+    const [failed, stored, recorded] = settled.map((r) =>
+      r.status === "fulfilled" ? r.value : 0,
+    ) as [number, number, number]
     return NextResponse.json({
       ok: true,
       statuses: statuses.length,
@@ -114,7 +132,11 @@ export async function POST(request: Request) {
   } catch (err) {
     // 500 so Meta RETRIES. The alternative — swallow it and answer 200 — loses
     // the payload permanently, because there is no way to ask Meta for it
-    // again. Both writes below are idempotent, so the retry is safe.
+    // again. The two writes that MATTER are idempotent: the reminder update is
+    // scoped to statuses a receipt may overwrite, and inbound messages upsert
+    // on wamid. The receipt log is not — a retry can leave a duplicate row in
+    // whatsapp_status_events — and that is the accepted cost of not losing the
+    // reason. It is an append-only record, read by wamid.
     console.error(
       `[whatsapp-webhook] processing failed, asking Meta to retry: ${
         err instanceof Error ? err.message : String(err)
@@ -126,66 +148,6 @@ export async function POST(request: Request) {
 
 type Admin = ReturnType<typeof createAdminClient>
 
-/**
- * Close the loop on sends Meta later rejected.
- *
- * This is the gap the webhook actually fills. The Graph call that queues a
- * message returns 200 with a message id long before Meta knows whether it can
- * be delivered — an invalid number, a blocked recipient or an expired template
- * all fail AFTERWARDS. Without this, `reminders` says `sent` forever and
- * "Needs attention" stays empty while nobody receives anything.
- *
- * Only `failed` is acted on. `delivered` and `read` are real signals but there
- * is nowhere to put them, and adding columns to record a state no screen shows
- * would be storage for its own sake.
- */
-async function recordFailedSends(admin: Admin, statuses: StatusEvent[]): Promise<number> {
-  const failures = statuses.filter((s) => s.status === "failed")
-  if (failures.length === 0) return 0
-
-  let updated = 0
-  for (const failure of failures) {
-    const { data, error } = await admin
-      .from("reminders")
-      .update({
-        status: "failed",
-        error: failure.error ?? "WhatsApp reported the message as failed",
-      })
-      .eq("whatsapp_message_id", failure.wamid)
-      // Scoped to rows we believe are delivered. Without it a late receipt for
-      // a reminder that has since been requeued would drag the fresh attempt
-      // back to `failed`, and the row would never be retried again.
-      .eq("status", "sent")
-      .select("id")
-
-    if (error) throw new Error(`marking ${failure.wamid} failed: ${error.message}`)
-
-    const matched = data?.length ?? 0
-    if (matched === 0) {
-      /**
-       * A signed failure receipt that matched nothing, said out loud.
-       *
-       * The `status = 'sent'` filter above is right — without it a late receipt
-       * would drag a since-requeued reminder back to failed and it would never
-       * retry — but it also drops receipts that arrive while the row is still
-       * `claimed`, which is a live race: Meta can deliver a failure webhook
-       * before markReminderSent() has committed. Dropping the row is the
-       * correct write; dropping METAS REASON with it is not, because that
-       * reason is the only explanation of the failure anyone will ever get.
-       *
-       * The reminder itself is not lost — the stuck-claim sweep requeues it —
-       * so this is a log line rather than a second write, which would risk
-       * exactly the clobber the filter prevents.
-       */
-      console.warn(
-        `[whatsapp-webhook] failure receipt for ${failure.wamid} matched no sent reminder ` +
-          `(already requeued, or still claimed): ${failure.error ?? "no reason given"}`,
-      )
-    }
-    updated += matched
-  }
-  return updated
-}
 
 /**
  * Persist replies to the platform number.
@@ -260,59 +222,5 @@ async function storeInboundMessages(admin: Admin, messages: InboundMessage[]): P
     .select("id")
 
   if (error) throw new Error(`storing inbound messages: ${error.message}`)
-  return data?.length ?? 0
-}
-
-
-/**
- * Keep every receipt, not only the ones we act on.
- *
- * `sent`, `delivered` and `read` were previously parsed and dropped, on the
- * reasoning that no column and no screen wanted them. The cost of that showed
- * up the first time a message was accepted with a real id and never arrived:
- * nothing anywhere could say whether Meta had reported a thing. "No receipt
- * arrived" and "delivered, and we threw it away" looked identical, and the
- * difference was the whole diagnosis.
- *
- * Best-effort, and deliberately last: this is a record, and failing to write
- * one must never cost the caller the status update that ran beside it.
- */
-async function recordStatusEvents(admin: Admin, statuses: StatusEvent[]): Promise<number> {
-  if (statuses.length === 0) return 0
-
-  // Attribute to a reminder where one owns the wamid. A test send matches
-  // nothing and is still worth keeping — that is precisely the case that was
-  // impossible to see before.
-  const { data: owners } = await admin
-    .from("reminders")
-    .select("id, business_id, whatsapp_message_id")
-    .in("whatsapp_message_id", statuses.map((s) => s.wamid))
-
-  const byWamid = new Map(
-    (owners ?? []).map((r) => [
-      r.whatsapp_message_id as string,
-      { id: r.id as string, businessId: r.business_id as string },
-    ]),
-  )
-
-  const { data, error } = await admin.from("whatsapp_status_events").insert(
-    statuses.map((s) => {
-      const owner = byWamid.get(s.wamid)
-      return {
-        wamid: s.wamid,
-        status: s.status,
-        error: s.error,
-        recipient: s.recipient,
-        reminder_id: owner?.id ?? null,
-        business_id: owner?.businessId ?? null,
-        occurred_at: s.occurredAt,
-      }
-    }),
-  ).select("id")
-
-  if (error) {
-    console.error(`[whatsapp-webhook] could not record status events: ${error.message}`)
-    return 0
-  }
   return data?.length ?? 0
 }
