@@ -183,6 +183,53 @@ export async function submitTemplate(creds: WhatsappCredentials): Promise<Submit
   return { ok: true, id: data?.id ?? null }
 }
 
+/**
+ * What Meta decided this template IS, which is not what we asked for.
+ *
+ * We submit `category: "UTILITY"`. Meta re-categorises on its own, from the
+ * body text, and the result is the single fact that decides whether a send can
+ * fail with 131049: the per-user frequency cap behind that code applies to
+ * MARKETING templates and exempts UTILITY ones.
+ *
+ * The app has always fetched this field and never shown it, so the question
+ * "why did a message that worked on Monday stop working on Tuesday" had no
+ * answer anywhere in the product — the delivery simply stopped, and the
+ * category that caused it sat one API field away, unread.
+ */
+export function describeCategory(category: string | null): {
+  tone: "good" | "warn" | "unknown"
+  headline: string
+  detail: string
+} | null {
+  if (!category) return null
+  const value = category.toUpperCase()
+
+  if (value === "UTILITY") {
+    return {
+      tone: "good",
+      headline: "Utility",
+      detail:
+        "The right category for a reminder about somebody's existing arrangement, and the reason these are exempt from the per-user frequency cap that produces #131049.",
+    }
+  }
+
+  if (value === "MARKETING") {
+    return {
+      tone: "warn",
+      headline: "Marketing — this is why sends start failing",
+      detail:
+        "Meta caps how many MARKETING template messages one person may receive, and blocks the rest with #131049 — which looks exactly like a broken number: the first few arrive, then they silently stop. We submit this template as UTILITY; Meta re-categorised it from the body text. Edit the wording in WhatsApp Manager and request Utility, or appeal the category there.",
+    }
+  }
+
+  return {
+    tone: "unknown",
+    headline: category,
+    detail:
+      "Not a category this app expects. UTILITY is what a reminder should be; anything else may be subject to per-user frequency caps.",
+  }
+}
+
 /** Plain-English guidance per state, for the settings page. */
 export function describeState(status: Extract<TemplateStatus, { ok: true }>): {
   tone: "good" | "waiting" | "bad"

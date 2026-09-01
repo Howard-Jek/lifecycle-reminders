@@ -1,3 +1,4 @@
+import { describeCategory } from "@/lib/notify/template-admin"
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -230,7 +231,7 @@ describe("checkTestDelivery reports where a test actually got to", () => {
     )
     expect(p.failure).not.toBeNull()
     expect(p.failure?.code).toBe("131049")
-    expect(p.failure?.title).toMatch(/held back/i)
+    expect(p.failure?.title).toMatch(/frequency cap/i)
     expect(p.failure?.action.length).toBeGreaterThan(0)
     expect(p.failure?.action).not.toMatch(/no WhatsApp account/i)
   })
@@ -242,5 +243,35 @@ describe("checkTestDelivery reports where a test actually got to", () => {
     )
     expect(p.replied).toBe(true)
     expect(p.stage).toBe("replied")
+  })
+})
+
+describe("describeCategory answers the question the UI could not", () => {
+  /**
+   * The app fetched Meta's `category` field from the very first version and
+   * never rendered it, so "approved" was on screen and "approved AS MARKETING"
+   * — the fact that decides whether sends will start failing — was not.
+   */
+  it("says plainly that Marketing is the cause of the failures", () => {
+    const c = describeCategory("MARKETING")
+    expect(c?.tone).toBe("warn")
+    expect(c?.detail).toMatch(/131049/)
+    expect(c?.detail).toMatch(/cap/i)
+  })
+
+  it("treats Utility as the right answer and explains why", () => {
+    const c = describeCategory("UTILITY")
+    expect(c?.tone).toBe("good")
+    expect(c?.detail).toMatch(/exempt/i)
+  })
+
+  it("does not guess when Meta has said nothing", () => {
+    // A missing category is unknown, not fine. Rendering "Utility" by default
+    // would be the same false reassurance the old test message gave.
+    expect(describeCategory(null)).toBeNull()
+  })
+
+  it("flags any other category rather than ignoring it", () => {
+    expect(describeCategory("AUTHENTICATION")?.tone).toBe("unknown")
   })
 })

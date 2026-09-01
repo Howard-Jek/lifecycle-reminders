@@ -133,3 +133,26 @@ describe("WHATSAPP_FAILURE_CAUSES", () => {
     }
   })
 })
+
+describe("131049 names the cause instead of telling you to wait", () => {
+  /**
+   * The code this deployment actually hits. Delivery to Howard's number worked
+   * four times on 30 Aug — sent, delivered, read — and then began failing with
+   * 131049 on the 31st. That shape is Meta's PER-USER frequency cap, which
+   * applies to MARKETING templates and exempts UTILITY ones.
+   *
+   * The old wording said it "usually clears on its own", which is true of the
+   * window and false of the cause: if Meta has re-categorised the template as
+   * marketing, waiting changes nothing and every retry fails the same way.
+   */
+  it("points at the template category rather than at patience", () => {
+    const info = describeWhatsappError("131049", null)
+    expect(info.action).toMatch(/marketing/i)
+    expect(info.action).toMatch(/categor/i)
+    expect(info.action).not.toMatch(/clears on its own/i)
+  })
+
+  it("still allows a retry, because the cap is per person and per window", () => {
+    expect(isRetryableFailure("131049")).toBe(true)
+  })
+})

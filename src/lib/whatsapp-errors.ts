@@ -77,9 +77,12 @@ const ERROR_GUIDANCE: Record<string, WhatsappErrorInfo> = {
     matched: true,
   },
   "131049": {
-    title: "Held back by Meta",
+    title: "Meta's per-user frequency cap",
     action:
-      "Meta limited delivery to protect engagement quality. This usually clears on its own; it will be tried again.",
+      "Meta caps how many MARKETING template messages one person receives and blocks the rest. Check the template's category in Settings — we submit it as Utility, which is exempt, but Meta re-categorises from the body text. If it says Marketing, that is the cause, and it will keep happening to whoever has already received a few.",
+    // Retried, because the cap is per-person and per-window rather than
+    // permanent. But if the category is wrong the retries will fail too, which
+    // is why the action sends the reader to look at it rather than wait.
     retryable: true,
     matched: true,
   },

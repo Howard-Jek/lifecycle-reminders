@@ -6,6 +6,7 @@ import { RefreshCw, Send } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { StatusPill } from "./status-pill"
+import { describeCategory } from "@/lib/notify/template-admin"
 import { describeState, type TemplateStatus } from "@/lib/notify/template-admin"
 import { submitReminderTemplate, refreshTemplateStatus } from "@/app/actions/whatsapp"
 
@@ -53,6 +54,8 @@ export function TemplateBlock({
   const current = refreshed ?? status
 
   const described = current?.ok ? describeState(current) : null
+
+  const categoryNote = current?.ok ? describeCategory(current.category) : null
   const canSubmit =
     configured &&
     current?.ok &&
@@ -123,6 +126,25 @@ export function TemplateBlock({
         ) : described ? (
           <p className="max-w-2xl text-sm text-muted-foreground">{described.detail}</p>
         ) : null}
+
+        {/* The category, which decides whether #131049 can happen at all. Shown
+            beside the approval state because "Approved" and "Approved as
+            Marketing" are very different facts and only one of them was ever
+            on screen. */}
+        {categoryNote && (
+          <div
+            className={
+              categoryNote.tone === "good"
+                ? "mt-3 max-w-2xl rounded-lg bg-emerald-500/10 px-3 py-2 text-emerald-700 dark:text-emerald-400"
+                : categoryNote.tone === "warn"
+                  ? "mt-3 max-w-2xl rounded-lg bg-destructive/10 px-3 py-2 text-destructive"
+                  : "mt-3 max-w-2xl rounded-lg bg-amber-500/10 px-3 py-2 text-amber-700 dark:text-amber-400"
+            }
+          >
+            <p className="text-sm font-medium">Category: {categoryNote.headline}</p>
+            <p className="mt-1 text-sm leading-relaxed">{categoryNote.detail}</p>
+          </div>
+        )}
       </div>
 
       {error && (
