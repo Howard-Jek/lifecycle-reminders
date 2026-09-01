@@ -7,6 +7,8 @@ import { nextOccurrence, todayInTimezone, daysBetween } from "@/lib/lifecycle/oc
 import { describeLeadTime } from "@/lib/notify/client-event-reminder"
 import { REMINDER_STATUS_PILL } from "@/lib/types"
 import { cn } from "@/lib/utils"
+import { loadDeliveryStates } from "@/lib/lifecycle/delivery-state"
+import { DeliveryTrail } from "@/components/delivery-trail"
 import { Badge } from "@/components/ui/badge"
 import { EventsClient } from "./events-client"
 import { listKnownEventTypes } from "@/lib/lifecycle/event-types"
@@ -59,7 +61,9 @@ export default async function ContactPage({ params }: { params: Promise<{ id: st
         .order("display_name"),
       admin
         .from("reminders")
-        .select("id, event_id, occurrence_date, due_at, status, member_id")
+        .select(
+          "id, event_id, occurrence_date, due_at, status, member_id, error, error_code, whatsapp_message_id",
+        )
         .eq("business_id", tenant.businessId)
         .order("due_at", { ascending: true })
         .limit(200),
@@ -82,6 +86,14 @@ export default async function ContactPage({ params }: { params: Promise<{ id: st
   // reminders key off event_id, and the event set is already loaded.
   const eventIds = new Set(events.map((e) => e.id as string))
   const reminders = (reminderRows ?? []).filter((r) => eventIds.has(r.event_id as string))
+
+  // Only the wamids on this page — this contact's reminders, not the tenant's.
+  const deliveryStates = await loadDeliveryStates(
+    admin,
+    reminders
+      .map((r) => r.whatsapp_message_id as string | null)
+      .filter((id): id is string => !!id),
+  )
 
   return (
     <div className="space-y-6">
@@ -145,24 +157,39 @@ export default async function ContactPage({ params }: { params: Promise<{ id: st
         ) : (
           <ul className="mt-4 divide-y">
             {reminders.map((r) => (
-              <li key={r.id as string} className="flex flex-wrap items-center gap-3 py-3 text-sm">
-                <span
-                  className={cn(
-                    "inline-flex h-5 items-center rounded-full px-2 text-xs font-medium",
-                    REMINDER_STATUS_PILL[r.status as string] ?? "bg-foreground/5",
-                  )}
-                >
-                  {r.status as string}
-                </span>
-                <span className="tabular-nums">
-                  {describeLeadTime(daysBetween(today, r.occurrence_date as string))}
-                </span>
-                <span className="text-muted-foreground">
-                  to{" "}
-                  {r.member_id
-                    ? memberName.get(r.member_id as string) ?? "Removed member"
-                    : "Owner (unassigned)"}
-                </span>
+              <li key={r.id as string} className="py-3 text-sm">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span
+                    className={cn(
+                      "inline-flex h-5 items-center rounded-full px-2 text-xs font-medium",
+                      REMINDER_STATUS_PILL[r.status as string] ?? "bg-foreground/5",
+                    )}
+                  >
+                    {r.status as string}
+                  </span>
+                  <span className="tabular-nums">
+                    {describeLeadTime(daysBetween(today, r.occurrence_date as string))}
+                  </span>
+                  <span className="text-muted-foreground">
+                    to{" "}
+                    {r.member_id
+                      ? memberName.get(r.member_id as string) ?? "Removed member"
+                      : "Owner (unassigned)"}
+                  </span>
+                </div>
+                {/* The same trail the inbox shows. This page is where somebody
+                    lands when asking "what happened to THIS person's
+                    reminder", so it is the one place the answer must not be a
+                    second click away. */}
+                <DeliveryTrail
+                  state={
+                    r.whatsapp_message_id
+                      ? deliveryStates.get(r.whatsapp_message_id as string)
+                      : undefined
+                  }
+                  errorCode={r.error_code as string | null}
+                  error={r.error as string | null}
+                />
               </li>
             ))}
           </ul>

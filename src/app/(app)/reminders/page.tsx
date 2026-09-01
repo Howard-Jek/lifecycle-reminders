@@ -7,7 +7,8 @@ import { humaniseEventType } from "@/lib/lifecycle/labels"
 import { describeLeadTime } from "@/lib/notify/client-event-reminder"
 import { REMINDER_STATUS_PILL } from "@/lib/types"
 import { cn } from "@/lib/utils"
-import { describeWhatsappError } from "@/lib/whatsapp-errors"
+import { loadDeliveryStates } from "@/lib/lifecycle/delivery-state"
+import { DeliveryTrail } from "@/components/delivery-trail"
 import { CopyButton } from "@/components/copy-button"
 import { CoverageBanner } from "@/components/coverage-banner"
 import { SetupChecklistSection } from "@/components/onboarding/setup-checklist-section"
@@ -67,6 +68,7 @@ type ReminderRow = {
   error: string | null
   error_code: string | null
   sent_at: string | null
+  whatsapp_message_id: string | null
   member_id: string | null
   event_id: string
 }
@@ -240,7 +242,7 @@ export default async function RemindersPage({
    * nothing for a feature it is not using.
    */
   const LIST_COLUMNS =
-    "id, occurrence_date, due_at, status, suggestion, error, error_code, sent_at, member_id, event_id"
+    "id, occurrence_date, due_at, status, suggestion, error, error_code, sent_at, member_id, event_id, whatsapp_message_id"
   const withType = (columns: string) =>
     viewTypes.length > 0 ? `${columns}, contact_events!inner(event_type)` : columns
 
@@ -315,6 +317,14 @@ export default async function RemindersPage({
   // error shape. The columns are still fixed — LIST_COLUMNS above — the
   // compiler just cannot see through the template string to check it.
   const rows = (data ?? []) as unknown as ReminderRow[]
+
+  // What Meta said about the messages on THIS page. One extra query for up to
+  // fifty rows, and it answers the question the status pill cannot: `sent` is
+  // our record of handing the message over, not evidence it arrived.
+  const deliveryStates = await loadDeliveryStates(
+    admin,
+    rows.map((r) => r.whatsapp_message_id).filter((id): id is string => !!id),
+  )
   const tabCounts = new Map<TabId, number>(
     // A failed count is `null`, which must not render as a confident "0".
     TABS.map((t, i) => [t.id, tabCountResults[i]?.count ?? -1]),
@@ -612,49 +622,19 @@ export default async function RemindersPage({
                     </div>
                   )}
 
-                  {row.error && (
-                    /* Ours first, Meta's second.
-                       The raw line is kept because it is the only thing worth
-                       pasting into a support ticket, but on its own it asks the
-                       operator to know what "[131047]" means. The sentence above
-                       it says what to actually do; the code below it is the
-                       evidence. */
-                    <div className="mt-2 rounded-lg bg-destructive/10 px-3 py-2 text-destructive">
-                      {(() => {
-                        // Only when a code was actually recognised. This tab
-                        // also holds failures that never reached WhatsApp — a
-                        // deleted contact, no recipient number, an interrupted
-                        // birthday — and telling somebody to go and check a
-                        // phone number that is perfectly fine is worse than
-                        // showing them the raw line and letting them read it.
-                        const info = describeWhatsappError(row.error_code, row.error)
-                        if (!info.matched) return null
-                        return (
-                          <>
-                            <p className="text-xs font-medium">{info.title}</p>
-                            <p className="mt-1 text-xs leading-relaxed">{info.action}</p>
-                          </>
-                        )
-                      })()}
-                      {/* break-words because this is Meta's text, not ours, and
-                          Meta puts URLs in it. #131042 arrives carrying a
-                          190-char billing link with no spaces, which has no
-                          break opportunity and dragged the whole page to 791px
-                          wide inside a 375px viewport — every row on the tab
-                          scrolling sideways because of one error string. */}
-                      <p
-                        className={cn(
-                          "text-xs break-words",
-                          // Dimmed only when there is guidance above it to be
-                          // secondary TO. On its own it is the whole message.
-                          describeWhatsappError(row.error_code, row.error).matched &&
-                            "mt-2 text-[11px] opacity-70",
-                        )}
-                      >
-                        {row.error}
-                      </p>
-                    </div>
-                  )}
+                  {/* Meta's own account of what happened, and the only place
+                      an operator can see it. Falls back to the row's stored
+                      error when no receipt was ever attributed — a failure at
+                      the Graph call never produces one. */}
+                  <DeliveryTrail
+                    state={
+                      row.whatsapp_message_id
+                        ? deliveryStates.get(row.whatsapp_message_id)
+                        : undefined
+                    }
+                    errorCode={row.error_code}
+                    error={row.error}
+                  />
                 </li>
               )
             })}
