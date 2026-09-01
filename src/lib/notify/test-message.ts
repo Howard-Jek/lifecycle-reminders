@@ -18,7 +18,9 @@
  * be exactly the thing under test.
  */
 
+import type { SupabaseClient } from "@supabase/supabase-js"
 import { appPublicUrl, isDryRun } from "@/lib/env"
+import { describeWhatsappError } from "@/lib/whatsapp-errors"
 import { readWhatsappCredentials, fetchTemplateStatus } from "./template-admin"
 import {
   sendClientEventReminder,
@@ -51,8 +53,12 @@ export function testMessageParams(): ReminderAlertParams {
     clientLabel: "Test Contact",
     eventLabel: "Test reminder",
     whenText: "today",
+    // Asks for a reply, because a delivery receipt proves the message reached a
+    // handset and nothing more. A reply proves a person saw it AND that the
+    // inbound half of the pipeline — webhook, signature, roster attribution —
+    // works, which is the half no receipt can tell you about.
     suggestion:
-      "This is a test message from Lifecycle. If you can read this, the template is approved and delivery works.",
+      "This is a test from Lifecycle. Please REPLY to this message (anything at all) to confirm the connection — the app is waiting for it.",
     deepLink: `${appPublicUrl() || "https://lifecycle-app-tau.vercel.app"}/reminders`,
   }
 }
@@ -110,4 +116,107 @@ async function explainSendFailure(error: string | undefined): Promise<string> {
 
   const status = await fetchTemplateStatus(creds)
   return status.ok ? `${base} (template state: ${status.state})` : base
+}
+
+// ── proving it arrived ──────────────────────────────────────────────────────
+
+/**
+ * How far a test message actually got.
+ *
+ * The send action can only report that META ACCEPTED the message, which is the
+ * cheapest and least interesting fact about it: the Graph API returns 200 and a
+ * message id for a number with no WhatsApp account, for a number Meta is
+ * throttling, and for a template it will refuse to deliver. Everything that
+ * makes a test worth running happens AFTERWARDS, as delivery receipts.
+ *
+ * So "Test sent — it should arrive in a few seconds; if it does not, that
+ * number has no WhatsApp account" was wrong twice: it asserted success at the
+ * one moment nothing had been proven, and it named the single least likely
+ * cause. On this deployment the real answer was 131049 — Meta throttling for
+ * engagement quality — and the operator was told to go and check a phone
+ * number that was perfectly fine.
+ */
+export const TEST_STAGES = ["accepted", "sent", "delivered", "read", "replied"] as const
+export type TestStage = (typeof TEST_STAGES)[number]
+
+export const TEST_STAGE_LABELS: Record<TestStage, string> = {
+  accepted: "Meta accepted the message",
+  sent: "Meta sent it",
+  delivered: "It reached the handset",
+  read: "It was opened",
+  replied: "They replied — the connection works both ways",
+}
+
+export type TestProgress = {
+  /** The furthest stage reached, in TEST_STAGES order. */
+  stage: TestStage
+  /** Set when Meta refused it. The stage reached is where it stopped. */
+  failure: { code: string | null; detail: string; title: string; action: string } | null
+  /** True once a reply from that number has landed since the test was sent. */
+  replied: boolean
+}
+
+/** Digits only, so "+65 8111 5611" and Meta's "6581115611" compare equal. */
+function digits(value: string): string {
+  return value.replace(/\D/g, "")
+}
+
+/**
+ * Read what actually happened to a test send.
+ *
+ * Everything here is already recorded — recordStatusEvents keeps every receipt
+ * and storeInboundMessages keeps every reply. This only asks the question, and
+ * it asks it of the same tables the reminders inbox uses, so a test that
+ * reports "delivered" is saying the same thing a real reminder would.
+ */
+export async function checkTestDelivery(
+  admin: SupabaseClient,
+  input: { wamid: string; number: string; sinceIso: string },
+): Promise<TestProgress> {
+  const { data: receipts } = await admin
+    .from("whatsapp_status_events")
+    .select("status, error, error_code")
+    .eq("wamid", input.wamid)
+
+  const rows = (receipts ?? []) as Array<{
+    status: string
+    error: string | null
+    error_code: string | null
+  }>
+  const seen = new Set(rows.map((r) => r.status))
+  const failed = rows.find((r) => r.status === "failed")
+
+  // Replies are matched on the NUMBER rather than on the wamid: a WhatsApp
+  // reply is a new message, not a threaded response, so it carries no reference
+  // to what it is answering. Anything from that handset after the test went out
+  // is the confirmation we asked for.
+  const { data: inbound } = await admin
+    .from("whatsapp_inbound_messages")
+    .select("from_number, received_at")
+    .eq("from_number", digits(input.number))
+    .gt("received_at", input.sinceIso)
+
+  const replied = (inbound ?? []).length > 0
+
+  let stage: TestStage = "accepted"
+  if (seen.has("sent")) stage = "sent"
+  if (seen.has("delivered")) stage = "delivered"
+  if (seen.has("read")) stage = "read"
+  if (replied) stage = "replied"
+
+  if (failed) {
+    const info = describeWhatsappError(failed.error_code, failed.error)
+    return {
+      stage,
+      replied,
+      failure: {
+        code: failed.error_code,
+        detail: failed.error ?? "WhatsApp reported the message as failed",
+        title: info.title,
+        action: info.action,
+      },
+    }
+  }
+
+  return { stage, replied, failure: null }
 }

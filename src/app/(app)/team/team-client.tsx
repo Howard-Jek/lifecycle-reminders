@@ -1,6 +1,6 @@
 "use client"
 
-import { useRef, useState, useTransition } from "react"
+import { useEffect, useRef, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { CalendarPlus, Plus, RotateCw, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -8,6 +8,12 @@ import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { CopyButton } from "@/components/copy-button"
+import {
+  TEST_STAGES,
+  TEST_STAGE_LABELS,
+  type TestStage,
+  type TestProgress,
+} from "@/lib/notify/test-message"
 import { RowActions } from "@/components/row-actions"
 import {
   createTeamMember,
@@ -16,6 +22,7 @@ import {
   issueCalendarFeed,
   revokeCalendarFeed,
   sendTestMessage,
+  checkTestMessage,
   type MemberInput,
 } from "@/app/actions/team-members"
 import { TestMessagePanel, type TestTarget } from "./test-message-panel"
@@ -56,6 +63,63 @@ export function TeamClient({
    * else entirely.
    */
   const [sending, setSending] = useState(false)
+
+  /**
+   * A test send being watched to its actual outcome.
+   *
+   * Held here rather than derived, because the interesting states arrive after
+   * the action has returned: Meta answers the Graph call immediately and
+   * reports real delivery seconds later over the webhook.
+   */
+  const [watch, setWatch] = useState<{
+    memberId: string
+    displayName: string
+    number: string
+    inactive: boolean
+    wamid: string
+    sentAt: string
+    stage: TestStage
+    failure: TestProgress["failure"]
+    replied: boolean
+    waiting: boolean
+  } | null>(null)
+
+  useEffect(() => {
+    if (!watch?.waiting) return
+    let cancelled = false
+
+    /**
+     * Stops on its own after two minutes.
+     *
+     * A reply needs a human to pick up a phone, so this cannot poll until it
+     * gets one — it would run forever on a test nobody answers. Giving up says
+     * exactly how far the message got, which is a real answer rather than a
+     * timeout: "delivered, not replied to" is a working pipeline and an
+     * unattended handset, and those must not read the same.
+     */
+    const deadline = Date.now() + 120_000
+    const timer = setInterval(async () => {
+      const result = await checkTestMessage(watch.memberId, watch.wamid, watch.sentAt)
+      if (cancelled) return
+      if (result.ok) {
+        const done = result.data.replied || result.data.failure !== null
+        setWatch((w) =>
+          w && w.wamid === watch.wamid
+            ? { ...w, ...result.data, waiting: !done && Date.now() < deadline }
+            : w,
+        )
+        if (done) return
+      }
+      if (Date.now() >= deadline) {
+        setWatch((w) => (w && w.wamid === watch.wamid ? { ...w, waiting: false } : w))
+      }
+    }, 3000)
+
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [watch?.waiting, watch?.wamid, watch?.memberId, watch?.sentAt])
   /**
    * Where focus was when the offer was staged, so it can go back.
    *
@@ -194,23 +258,42 @@ export function TeamClient({
       }
       setTestTarget(null)
       restoreFocus()
-      const { displayName, number, inactive } = result.data
-      setTestNotice({
-        tone: result.data.dryRun ? "dry" : "sent",
-        text: result.data.dryRun
+      const { displayName, number, inactive, dryRun, whatsappMessageId, sentAt } = result.data
+
+      if (dryRun) {
+        setTestNotice({
+          tone: "dry",
           // Says "server log", NOT "Sandbox": the sandbox transcript is written
           // by the reminder cycle, and a direct test send never touches it. The
           // first draft of this sentence sent the operator looking in a place
           // the message was never going to appear.
-          ? `Nothing was sent — REMINDER_DRY_RUN is on. The message for ${displayName} (${number}) was built and logged on the server, but never reached WhatsApp.`
-          : `Test sent to ${displayName} (${number}). It should arrive within a few seconds; if it does not, that number has no WhatsApp account.` +
-            // A delivered test to a deactivated member proves the number, and
-            // proves nothing about their reminders — the materialiser skips
-            // them entirely. Saying so here is the difference between a useful
-            // test and a falsely reassuring one.
-            (inactive
-              ? ` ${displayName} is inactive, so real reminders will not be sent to them.`
-              : ""),
+          text: `Nothing was sent — REMINDER_DRY_RUN is on. The message for ${displayName} (${number}) was built and logged on the server, but never reached WhatsApp.`,
+        })
+        return
+      }
+
+      /**
+       * Watch it, rather than assert it.
+       *
+       * The old copy said the message "should arrive within a few seconds; if
+       * it does not, that number has no WhatsApp account" — asserted at the one
+       * moment when nothing had been proven. The Graph API returns 200 and a
+       * message id for a number with no WhatsApp account, for a number Meta is
+       * throttling, and for a template it will then refuse to deliver. On this
+       * deployment the real answer was 131049, and the operator was sent to
+       * check a phone number that was perfectly fine.
+       */
+      setWatch({
+        memberId: target.id,
+        displayName,
+        number,
+        inactive,
+        wamid: whatsappMessageId,
+        sentAt,
+        stage: "accepted",
+        failure: null,
+        replied: false,
+        waiting: true,
       })
     })
   }
@@ -275,6 +358,88 @@ export function TeamClient({
         * other notice in the app — including the calendar panel directly above
         * — already sits on one. The token stays; the surface under it changes.
         */}
+      {watch && (
+        <div className="rounded-xl border bg-card p-4 shadow-sm ring-1 ring-foreground/5">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium">
+                Test to {watch.displayName} ({watch.number})
+              </p>
+
+              {/* The ladder. Each rung is a fact somebody else told us — a
+                  delivery receipt from Meta, or a reply from the handset — so
+                  a rung that is not lit is genuinely unknown rather than
+                  assumed. */}
+              <ol className="mt-3 space-y-1.5">
+                {TEST_STAGES.map((step) => {
+                  const reachedIndex = TEST_STAGES.indexOf(watch.stage)
+                  const stepIndex = TEST_STAGES.indexOf(step)
+                  const reached = stepIndex <= reachedIndex
+                  const stalledHere = !!watch.failure && stepIndex === reachedIndex + 1
+                  return (
+                    <li key={step} className="flex items-start gap-2 text-sm">
+                      <span
+                        aria-hidden
+                        className={
+                          stalledHere
+                            ? "text-destructive"
+                            : reached
+                              ? "text-emerald-600 dark:text-emerald-400"
+                              : "text-muted-foreground/50"
+                        }
+                      >
+                        {stalledHere ? "✗" : reached ? "✓" : watch.waiting ? "…" : "·"}
+                      </span>
+                      <span className={reached ? "" : "text-muted-foreground"}>
+                        {TEST_STAGE_LABELS[step]}
+                      </span>
+                    </li>
+                  )
+                })}
+              </ol>
+
+              {watch.failure ? (
+                <div className="mt-3 rounded-lg bg-destructive/10 px-3 py-2 text-destructive">
+                  <p className="text-sm font-medium">{watch.failure.title}</p>
+                  <p className="mt-1 text-sm leading-relaxed">{watch.failure.action}</p>
+                  <p className="mt-2 text-[11px] break-words opacity-70">{watch.failure.detail}</p>
+                </div>
+              ) : watch.waiting ? (
+                <p className="mt-3 text-sm text-muted-foreground">
+                  Waiting — reply to the message on that handset to confirm the connection.
+                </p>
+              ) : watch.replied ? (
+                <p className="mt-3 rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-400">
+                  Confirmed end to end: the message went out and their reply came back.
+                </p>
+              ) : (
+                /* Not a failure and not a success. Saying which is the whole
+                   point — "delivered but nobody replied" is a working pipeline
+                   and an unattended handset, and it must not read the same as
+                   a message that never arrived. */
+                <p className="mt-3 rounded-lg bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
+                  Stopped watching after two minutes. It got as far as
+                  {" "}&ldquo;{TEST_STAGE_LABELS[watch.stage]}&rdquo; and no reply arrived — send
+                  another once someone is at that handset.
+                </p>
+              )}
+
+              {watch.inactive && (
+                /* A delivered test to a deactivated member proves the number
+                   and proves nothing about their reminders — the materialiser
+                   skips them entirely. */
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {watch.displayName} is inactive, so real reminders will not be sent to them.
+                </p>
+              )}
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => setWatch(null)} aria-label="Dismiss">
+              <X />
+            </Button>
+          </div>
+        </div>
+      )}
+
       {testNotice && (
         <div className="rounded-xl border bg-card p-4 shadow-sm ring-1 ring-foreground/5">
           <div className="flex items-start gap-3">

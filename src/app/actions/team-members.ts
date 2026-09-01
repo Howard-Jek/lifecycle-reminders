@@ -6,7 +6,11 @@ import { requireTenant } from "@/lib/tenant"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { normalizePhone } from "@/lib/sanitize"
 import { appPublicUrl } from "@/lib/env"
-import { sendRosterTestMessage } from "@/lib/notify/test-message"
+import {
+  sendRosterTestMessage,
+  checkTestDelivery,
+  type TestProgress,
+} from "@/lib/notify/test-message"
 import type { TeamMember } from "@/lib/lifecycle/types"
 
 export type ActionResult<T = undefined> =
@@ -266,6 +270,10 @@ export type TestSendReceipt = {
    * work, when in fact they will never receive one.
    */
   inactive: boolean
+  /** Meta's id for the message, so its receipts can be looked up. */
+  whatsappMessageId: string
+  /** When it went, so a reply can be told from earlier chatter. */
+  sentAt: string
 }
 
 /**
@@ -309,6 +317,52 @@ export async function sendTestMessage(memberId: string): Promise<ActionResult<Te
       number: result.to,
       dryRun: result.dryRun,
       inactive: !member.active,
+      // Carried out so the caller can ask what happened NEXT. Without it the
+      // only thing anyone ever learns about a test is that Meta accepted it.
+      whatsappMessageId: result.whatsappMessageId,
+      sentAt: new Date().toISOString(),
     },
+  }
+}
+
+/**
+ * What became of a test send.
+ *
+ * Split from sendTestMessage because the interesting part is asynchronous: Meta
+ * answers the Graph call in milliseconds and reports actual delivery seconds
+ * later, over the webhook. A server action cannot sit and wait for that, so the
+ * page asks again.
+ *
+ * Scoped to the caller's own roster by the same query that authorises the send,
+ * and for the same reason — every export here is a public POST endpoint, so
+ * without the business filter this would tell any caller who could guess a
+ * member id and a wamid whether that person had read their messages.
+ */
+export async function checkTestMessage(
+  memberId: string,
+  wamid: string,
+  sentAtIso: string,
+): Promise<ActionResult<TestProgress>> {
+  const tenant = await requireTenant()
+  const admin = createAdminClient()
+
+  const { data: member } = await admin
+    .from("team_members")
+    .select("id, whatsapp_number")
+    .eq("id", memberId)
+    .eq("business_id", tenant.businessId)
+    .maybeSingle<{ id: string; whatsapp_number: string | null }>()
+
+  if (!member?.whatsapp_number) {
+    return { ok: false, error: "That team member no longer exists." }
+  }
+
+  return {
+    ok: true,
+    data: await checkTestDelivery(admin, {
+      wamid,
+      number: member.whatsapp_number,
+      sinceIso: sentAtIso,
+    }),
   }
 }

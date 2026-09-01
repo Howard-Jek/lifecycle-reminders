@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { testMessageParams, sendRosterTestMessage } from "@/lib/notify/test-message"
+import { testMessageParams, sendRosterTestMessage , checkTestDelivery } from "@/lib/notify/test-message"
 
 /**
  * The test send is the only message this app puts on a handset on demand, and
@@ -23,13 +23,21 @@ describe("the message says it is a test", () => {
     const p = testMessageParams()
     expect(p.clientLabel).toMatch(/test/i)
     expect(p.eventLabel).toMatch(/test/i)
-    expect(p.suggestion).toMatch(/test message from Lifecycle/i)
+    expect(p.suggestion).toMatch(/test from Lifecycle/i)
   })
 
-  it("says what a delivered message proves", () => {
-    // The point of the send is the inference the reader is meant to draw, so
-    // the message states it rather than leaving it implied.
-    expect(testMessageParams().suggestion).toMatch(/template is approved and delivery works/i)
+  it("ASKS FOR A REPLY, because that is the half no receipt can prove", () => {
+    /**
+     * It used to say a delivered message proved "the template is approved and
+     * delivery works". Delivery receipts prove that much on their own — what
+     * they cannot show is that a person saw it, or that the INBOUND half
+     * (webhook, signature check, roster attribution) works at all. Only a reply
+     * does, so the message asks for one and the panel waits for it.
+     */
+    const suggestion = testMessageParams().suggestion
+    expect(suggestion).toMatch(/repl(y|ies)/i)
+    // Said plainly enough that somebody glancing at a handset acts on it.
+    expect(suggestion).toMatch(/confirm/i)
   })
 
   it("carries an absolute deep link", () => {
@@ -167,5 +175,72 @@ describe("the panel states the cost before it is incurred", () => {
     // — a false statement about a billed action, on the control that makes it.
     expect(panel).toMatch(/\{sending \? "Sending…"/)
     expect(panel).not.toMatch(/\{pending \? "Sending…"/)
+  })
+})
+
+describe("checkTestDelivery reports where a test actually got to", () => {
+  /**
+   * The whole point of the change. The Graph API returns 200 and a message id
+   * for a number with no WhatsApp account, for a number Meta is throttling, and
+   * for a template it will then refuse to deliver — so "Meta accepted it" is
+   * the cheapest fact about a test and was the only one the UI ever reported.
+   *
+   * These stub the two tables the answer comes from, which are the same tables
+   * the reminders inbox reads: a test that says "delivered" is making the same
+   * claim a real reminder would.
+   */
+  const stub = (receipts: unknown[], inbound: unknown[]) =>
+    ({
+      from: (table: string) => ({
+        select: () => {
+          const chain = {
+            eq: () => chain,
+            gt: () => chain,
+            then: (r: (v: { data: unknown[] }) => unknown) =>
+              r({ data: table === "whatsapp_status_events" ? receipts : inbound }),
+          }
+          return chain
+        },
+      }),
+    }) as never
+
+  const at = "2026-09-01T00:00:00.000Z"
+
+  it("reports `accepted` when Meta has said nothing yet", async () => {
+    const p = await checkTestDelivery(stub([], []), { wamid: "w", number: "+6581115611", sinceIso: at })
+    expect(p.stage).toBe("accepted")
+    expect(p.failure).toBeNull()
+  })
+
+  it("climbs to the furthest receipt, not the newest", async () => {
+    // Meta does not guarantee receipt order, so this must not be a last-write.
+    const p = await checkTestDelivery(
+      stub([{ status: "delivered" }, { status: "sent" }], []),
+      { wamid: "w", number: "+6581115611", sinceIso: at },
+    )
+    expect(p.stage).toBe("delivered")
+  })
+
+  it("names the failure with guidance instead of a bare code", async () => {
+    // 131049 is what actually happened on this deployment, and the old copy
+    // blamed a missing WhatsApp account for it.
+    const p = await checkTestDelivery(
+      stub([{ status: "failed", error: "[131049] engagement", error_code: "131049" }], []),
+      { wamid: "w", number: "+6581115611", sinceIso: at },
+    )
+    expect(p.failure).not.toBeNull()
+    expect(p.failure?.code).toBe("131049")
+    expect(p.failure?.title).toMatch(/held back/i)
+    expect(p.failure?.action.length).toBeGreaterThan(0)
+    expect(p.failure?.action).not.toMatch(/no WhatsApp account/i)
+  })
+
+  it("treats a reply as the top of the ladder", async () => {
+    const p = await checkTestDelivery(
+      stub([{ status: "delivered" }], [{ from_number: "6581115611", received_at: at }]),
+      { wamid: "w", number: "+6581115611", sinceIso: at },
+    )
+    expect(p.replied).toBe(true)
+    expect(p.stage).toBe("replied")
   })
 })
